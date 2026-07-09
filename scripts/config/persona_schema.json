@@ -1,0 +1,131 @@
+{
+  "schema_version": "1.0",
+  "profile_meta": {
+    "profile_id": "",
+    "profile_name": "",
+    "profile_source": "preset",
+    "description": "",
+    "tags": []
+  },
+  "core_causal": {
+    "epistemic_profile_label": "",
+    "institutional_trust": "medium",
+    "uncertainty_tolerance": "medium",
+    "evidence_style": "mixed",
+    "official_narrative_suspicion": "medium",
+    "openness_to_update": "medium"
+  },
+  "topic_linked": {
+    "occupation": "",
+    "education_level": "",
+    "training_style": "",
+    "domain_familiarity": "",
+    "topic_interest": "",
+    "prior_exposure": "",
+    "custom_topic_notes": ""
+  },
+  "flavor_only": {
+    "age_group": "",
+    "gender": "",
+    "ethnicity": "",
+    "lifestyle_notes": "",
+    "tone_hint": ""
+  },
+  "render_config": {
+    "use_core_causal": true,
+    "use_topic_linked": false,
+    "use_flavor_only": false,
+    "topic_mode": "off",
+    "flavor_mode": "off",
+    "manual_topic_override": false,
+    "manual_flavor_override": false,
+    "show_profile_label": true,
+    "render_style": "structured_card"
+  },
+  "allowed_values": {
+    "institutional_trust": [
+      "very_low",
+      "low",
+      "medium",
+      "high",
+      "very_high"
+    ],
+    "uncertainty_tolerance": [
+      "very_low",
+      "low",
+      "medium",
+      "high",
+      "very_high"
+    ],
+    "evidence_style": [
+      "concrete_first",
+      "source_first",
+      "coherence_first",
+      "intuition_first",
+      "mixed"
+    ],
+    "official_narrative_suspicion": [
+      "very_low",
+      "low",
+      "medium",
+      "high",
+      "very_high"
+    ],
+    "openness_to_update": [
+      "very_low",
+      "low",
+      "medium",
+      "high",
+      "very_high"
+    ],
+    "education_level": [
+      "high_school",
+      "bachelor",
+      "master",
+      "phd",
+      "other"
+    ],
+    "training_style": [
+      "technical",
+      "humanities",
+      "social_science",
+      "mixed",
+      "none"
+    ],
+    "domain_familiarity": [
+      "none",
+      "low",
+      "medium",
+      "high"
+    ],
+    "age_group": [
+      "18_24",
+      "25_29",
+      "30_39",
+      "40_49",
+      "50_59",
+      "60_plus"
+    ],
+    "topic_mode": [
+      "off",
+      "auto",
+      "manual"
+    ],
+    "flavor_mode": [
+      "off",
+      "auto",
+      "manual"
+    ],
+    "render_style": [
+      "structured_card",
+      "compact_card"
+    ],
+    "profile_distribution_mode": [
+      "random",
+      "equal",
+      "all",
+      "more",
+      "most"
+    ]
+  }
+}

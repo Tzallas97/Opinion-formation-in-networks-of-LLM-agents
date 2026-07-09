@@ -1,0 +1,28 @@
+# Python 3.12
+#
+# Install with:  pip install -r requirements.txt
+#
+# External requirement (not a pip package): a running Ollama server with the
+# model pulled, e.g.  ollama pull qwen3:8b   (see the README for details).
+
+# LLM orchestration (local models via Ollama)
+langchain
+langchain-core
+langchain-ollama
+langchain-classic
+tenacity
+
+# Data / numerics
+numpy
+pandas
+
+# Network models
+networkx
+
+# Plotting and animation
+matplotlib
+plotly
+imageio
+
+# The launcher GUI uses tkinter, which ships with CPython. On some Linux
+# distributions install it separately:  sudo apt install python3-tk

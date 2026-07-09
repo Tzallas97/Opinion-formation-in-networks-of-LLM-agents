@@ -1,0 +1,290 @@
+{
+  "profiles": [
+    {
+      "profile_meta": {
+        "profile_id": "trusting_pragmatist_v1",
+        "profile_name": "Institutionally trusting pragmatist",
+        "profile_source": "preset",
+        "description": "High institutional trust, concrete-first, moderate openness",
+        "tags": []
+      },
+      "core_causal": {
+        "epistemic_profile_label": "Institutionally trusting pragmatist",
+        "institutional_trust": "high",
+        "uncertainty_tolerance": "medium",
+        "evidence_style": "concrete_first",
+        "official_narrative_suspicion": "low",
+        "openness_to_update": "medium"
+      },
+      "topic_linked": {
+        "occupation": "",
+        "education_level": "",
+        "training_style": "",
+        "domain_familiarity": "",
+        "topic_interest": "",
+        "prior_exposure": "",
+        "custom_topic_notes": ""
+      },
+      "flavor_only": {
+        "age_group": "",
+        "gender": "",
+        "ethnicity": "",
+        "lifestyle_notes": "",
+        "tone_hint": ""
+      },
+      "render_config": {
+        "use_core_causal": true,
+        "use_topic_linked": false,
+        "use_flavor_only": false,
+        "topic_mode": "off",
+        "flavor_mode": "off",
+        "manual_topic_override": false,
+        "manual_flavor_override": false,
+        "show_profile_label": true,
+        "render_style": "structured_card",
+        "profile_distribution_mode": "all"
+      }
+    },
+    {
+      "profile_meta": {
+        "profile_id": "suspicious_skeptic_v1",
+        "profile_name": "Suspicious anti-institutional skeptic",
+        "profile_source": "preset",
+        "description": "Low institutional trust, high official-narrative suspicion, lower openness",
+        "tags": [
+          "preset",
+          "skeptical"
+        ]
+      },
+      "core_causal": {
+        "epistemic_profile_label": "Suspicious anti-institutional skeptic",
+        "institutional_trust": "low",
+        "uncertainty_tolerance": "low",
+        "evidence_style": "coherence_first",
+        "official_narrative_suspicion": "high",
+        "openness_to_update": "low"
+      },
+      "topic_linked": {
+        "occupation": "",
+        "education_level": "",
+        "training_style": "",
+        "domain_familiarity": "",
+        "topic_interest": "",
+        "prior_exposure": "",
+        "custom_topic_notes": ""
+      },
+      "flavor_only": {
+        "age_group": "",
+        "gender": "",
+        "ethnicity": "",
+        "lifestyle_notes": "",
+        "tone_hint": ""
+      },
+      "render_config": {
+        "use_core_causal": true,
+        "use_topic_linked": false,
+        "use_flavor_only": false,
+        "topic_mode": "off",
+        "flavor_mode": "off",
+        "manual_topic_override": false,
+        "manual_flavor_override": false,
+        "show_profile_label": true,
+        "render_style": "structured_card",
+        "profile_distribution_mode": "all"
+      }
+    },
+    {
+      "profile_meta": {
+        "profile_id": "open_minded_skeptic_v1",
+        "profile_name": "Open-minded skeptical reviser",
+        "profile_source": "preset",
+        "description": "Suspicious of official stories but open to changing view when a clear point appears",
+        "tags": [
+          "preset",
+          "skeptical",
+          "open"
+        ]
+      },
+      "core_causal": {
+        "epistemic_profile_label": "Open-minded skeptical reviser",
+        "institutional_trust": "low",
+        "uncertainty_tolerance": "high",
+        "evidence_style": "coherence_first",
+        "official_narrative_suspicion": "high",
+        "openness_to_update": "high"
+      },
+      "topic_linked": {
+        "occupation": "",
+        "education_level": "",
+        "training_style": "",
+        "domain_familiarity": "",
+        "topic_interest": "",
+        "prior_exposure": "",
+        "custom_topic_notes": ""
+      },
+      "flavor_only": {
+        "age_group": "",
+        "gender": "",
+        "ethnicity": "",
+        "lifestyle_notes": "",
+        "tone_hint": ""
+      },
+      "render_config": {
+        "use_core_causal": true,
+        "use_topic_linked": false,
+        "use_flavor_only": false,
+        "topic_mode": "off",
+        "flavor_mode": "off",
+        "manual_topic_override": false,
+        "manual_flavor_override": false,
+        "show_profile_label": true,
+        "render_style": "structured_card",
+        "profile_distribution_mode": "all"
+      }
+    },
+    {
+      "profile_meta": {
+        "profile_id": "authority_stabilizer_v1",
+        "profile_name": "Authority-leaning stabilizer",
+        "profile_source": "preset",
+        "description": "Relies heavily on established records and does not move easily",
+        "tags": [
+          "preset",
+          "authority"
+        ]
+      },
+      "core_causal": {
+        "epistemic_profile_label": "Authority-leaning stabilizer",
+        "institutional_trust": "high",
+        "uncertainty_tolerance": "low",
+        "evidence_style": "source_first",
+        "official_narrative_suspicion": "low",
+        "openness_to_update": "low"
+      },
+      "topic_linked": {
+        "occupation": "",
+        "education_level": "",
+        "training_style": "",
+        "domain_familiarity": "",
+        "topic_interest": "",
+        "prior_exposure": "",
+        "custom_topic_notes": ""
+      },
+      "flavor_only": {
+        "age_group": "",
+        "gender": "",
+        "ethnicity": "",
+        "lifestyle_notes": "",
+        "tone_hint": ""
+      },
+      "render_config": {
+        "use_core_causal": true,
+        "use_topic_linked": false,
+        "use_flavor_only": false,
+        "topic_mode": "off",
+        "flavor_mode": "off",
+        "manual_topic_override": false,
+        "manual_flavor_override": false,
+        "show_profile_label": true,
+        "render_style": "structured_card",
+        "profile_distribution_mode": "all"
+      }
+    },
+    {
+      "profile_meta": {
+        "profile_id": "uncertainty_tolerant_agnostic_v1",
+        "profile_name": "Uncertainty-tolerant agnostic",
+        "profile_source": "preset",
+        "description": "Comfortable staying unsure when information is limited",
+        "tags": [
+          "preset",
+          "agnostic"
+        ]
+      },
+      "core_causal": {
+        "epistemic_profile_label": "Uncertainty-tolerant agnostic",
+        "institutional_trust": "medium",
+        "uncertainty_tolerance": "high",
+        "evidence_style": "concrete_first",
+        "official_narrative_suspicion": "medium",
+        "openness_to_update": "medium"
+      },
+      "topic_linked": {
+        "occupation": "",
+        "education_level": "",
+        "training_style": "",
+        "domain_familiarity": "",
+        "topic_interest": "",
+        "prior_exposure": "",
+        "custom_topic_notes": ""
+      },
+      "flavor_only": {
+        "age_group": "",
+        "gender": "",
+        "ethnicity": "",
+        "lifestyle_notes": "",
+        "tone_hint": ""
+      },
+      "render_config": {
+        "use_core_causal": true,
+        "use_topic_linked": false,
+        "use_flavor_only": false,
+        "topic_mode": "off",
+        "flavor_mode": "off",
+        "manual_topic_override": false,
+        "manual_flavor_override": false,
+        "show_profile_label": true,
+        "render_style": "structured_card",
+        "profile_distribution_mode": "all"
+      }
+    },
+    {
+      "profile_meta": {
+        "profile_id": "practical_distruster_v1",
+        "profile_name": "Low-trust practical realist",
+        "profile_source": "preset",
+        "description": "Wary of institutions, but concrete physical details matter more than vague suspicion",
+        "tags": [
+          "preset",
+          "practical"
+        ]
+      },
+      "core_causal": {
+        "epistemic_profile_label": "Low-trust practical realist",
+        "institutional_trust": "low",
+        "uncertainty_tolerance": "medium",
+        "evidence_style": "concrete_first",
+        "official_narrative_suspicion": "medium",
+        "openness_to_update": "medium"
+      },
+      "topic_linked": {
+        "occupation": "",
+        "education_level": "",
+        "training_style": "",
+        "domain_familiarity": "",
+        "topic_interest": "",
+        "prior_exposure": "",
+        "custom_topic_notes": ""
+      },
+      "flavor_only": {
+        "age_group": "",
+        "gender": "",
+        "ethnicity": "",
+        "lifestyle_notes": "",
+        "tone_hint": ""
+      },
+      "render_config": {
+        "use_core_causal": true,
+        "use_topic_linked": false,
+        "use_flavor_only": false,
+        "topic_mode": "off",
+        "flavor_mode": "off",
+        "manual_topic_override": false,
+        "manual_flavor_override": false,
+        "show_profile_label": true,
+        "render_style": "structured_card",
+        "profile_distribution_mode": "all"
+      }
+    }
+  ]
+}

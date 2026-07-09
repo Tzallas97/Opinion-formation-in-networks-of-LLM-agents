@@ -1,0 +1,46 @@
+# =====================================================================
+# WHITELIST .gitignore
+# Ignore everything by default, then allow ONLY the files we want on
+# GitHub. Anything not explicitly re-included below cannot be committed,
+# even with `git add .`.
+# =====================================================================
+
+# 1) ignore everything at the repo root
+/*
+
+# 2) allow these top-level entries
+!.gitignore
+!README.md
+!requirements.txt
+!list_agent_descriptions.csv
+!assets/
+!prompts/
+!scripts/
+
+# --- assets: only the README image ---------------------------------
+assets/**
+!assets/network_opinion_dynamics.png
+
+# --- prompts: everything except python caches ----------------------
+prompts/**/__pycache__/
+prompts/**/*.pyc
+
+# --- scripts: ignore all, then allow the used files + config -------
+scripts/**
+!scripts/config/
+!scripts/config/persona_profiles.json
+!scripts/config/persona_schema.json
+!scripts/.launcher_settings.json
+!scripts/create_prompts.py
+!scripts/main_plot_network.py
+!scripts/network_models.py
+!scripts/opinion_dynamics_test_network_qwen.py
+!scripts/opinion_dynamics_v3_check.py
+!scripts/persona_profiles_support.py
+!scripts/topic_persona_fields.py
+!scripts/topic_persona_profiles.py
+!scripts/ui_lancher11.py
+
+# never commit caches / envs anywhere
+**/__pycache__/
+*.pyc

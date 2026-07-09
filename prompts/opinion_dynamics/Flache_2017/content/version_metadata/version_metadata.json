@@ -1,0 +1,19 @@
+{
+  "v52": {
+    "topic_key": "v52",
+    "theory_statement": "US astronauts have landed on the moon"
+  },
+  "v113": {
+    "topic_key": "v113",
+    "theory_statement": "Greece's referendum was a triumph of democracy, empowering citizens to shape their country's future"
+  },
+  "v119": {
+    "topic_key": "v119",
+    "theory_statement": "Twin towers were brought down by a conspiracy of government insiders to justify wars and increase surveillance",
+    "false_statement": "Twin towers were brought down by a terrorist attack and not by a conspiracy of government insiders"
+  },
+  "v130": {
+    "topic_key": "v130",
+    "theory_statement": "We live in a computer simulation created by an advanced civilization"
+  }
+}
