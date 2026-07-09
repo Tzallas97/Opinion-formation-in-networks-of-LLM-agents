@@ -13,13 +13,8 @@
 !README.md
 !requirements.txt
 !list_agent_descriptions.csv
-!assets/
 !prompts/
 !scripts/
-
-# --- assets: only the README image ---------------------------------
-assets/**
-!assets/network_opinion_dynamics.png
 
 # --- prompts: everything except python caches ----------------------
 prompts/**/__pycache__/
