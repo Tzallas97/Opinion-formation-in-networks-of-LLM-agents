@@ -1,10 +1,15 @@
+"""Generate prompt-folder variants for the opinion-dynamics experiments.
+
+This script keeps the topic/framing dictionaries and the reusable prompt templates in one place, then writes the folder structure consumed by the simulator. It is a setup utility: it creates prompt files and persona CSV placeholders, but it does not run simulations or alter result CSVs.
+"""
+
 import argparse
 import re
 import shutil
 from pathlib import Path
 
 # =====================================================
-# 1. Topic dictionaries (everything in one file)
+# 1. Topic dictionaries and prompt-generation constants
 # =====================================================
 
 DICT_TOPIC_NAME = {
@@ -320,6 +325,7 @@ FACT_PACK_PLACEHOLDER = "{FACT_PACK}"
 # =====================================================
 
 def parse_args():
+    """Parse command-line arguments for selecting which prompt versions to generate."""
     parser = argparse.ArgumentParser(
         description="Create all prompt folders for a given version while preserving runtime placeholders like {FACT_PACK}."
     )
@@ -350,6 +356,7 @@ def normalize_version(raw: str) -> str:
 
 def ensure_templates_and_csv_exist():
     # Normal templates
+    """Create the shared template files and placeholder CSVs required by generated prompt folders."""
     if not TEMPLATE_DIR.exists():
         raise FileNotFoundError(f"Template directory does not exist: {TEMPLATE_DIR}")
 
@@ -480,6 +487,7 @@ def create_prompts_for_version(version_tag: str):
 # =====================================================
 
 def main():
+    """Generate the requested prompt folders after validating and normalizing the selected version argument."""
     args = parse_args()
     version_tag = normalize_version(args.prompt_version)
     create_prompts_for_version(version_tag)

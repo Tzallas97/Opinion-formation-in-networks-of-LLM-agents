@@ -1,12 +1,17 @@
-import math
+"""Network construction and partner-selection utilities for opinion-dynamics runs.
+
+The simulator imports this module to build Watts-Strogatz, Erdos-Renyi, and Barabasi-Albert neighbor dictionaries, apply optional structural homophily, and choose interaction partners using opinion/persona similarity scores. Functions return plain ``dict[int, set[int]]`` structures so the runtime can update edges without depending on NetworkX objects.
+"""
+
 import random
-from typing import Dict, Set, Sequence, Mapping, Hashable, Union, Any
+from typing import Dict, Set, Sequence, Mapping, Union, Any
 import networkx as nx
 
 OpinionContainer = Union[Sequence[int], Mapping[int, int]]
 
 
 def _safe_int(x: Any, default: int | None = None) -> int | None:
+    """Convert a value to int while preserving a caller-provided default on invalid input."""
     try:
         if x is None:
             return default
@@ -16,6 +21,7 @@ def _safe_int(x: Any, default: int | None = None) -> int | None:
 
 
 def _norm_cat(x: Any) -> str | None:
+    """Normalize a categorical attribute into a lowercase comparison token."""
     if x is None:
         return None
     s = str(x).strip().lower()
@@ -23,6 +29,7 @@ def _norm_cat(x: Any) -> str | None:
 
 
 def _cat_map(values: list[str | None]) -> dict[str, int]:
+    """Build a deterministic integer encoding for non-empty categorical values."""
     vals = sorted({v for v in values if v is not None})
     return {v: i for i, v in enumerate(vals)}
 
@@ -49,6 +56,7 @@ def _homophily_order_indices(
     rng.shuffle(idxs)  # deterministic tie-breaking within each opinion bin
 
     def get_op(i: int) -> int:
+        """Return the integer initial opinion for an agent, using zero when it is unavailable."""
         if opinions is None:
             return 0
         try:
@@ -182,6 +190,7 @@ def _ba_hub_order_indices(
     rng = random.Random(seed)
 
     def get_op(i: int) -> int:
+        """Return the integer initial opinion for an agent, using zero when it is unavailable."""
         if opinions is None:
             return 0
         try:
@@ -193,6 +202,7 @@ def _ba_hub_order_indices(
                 return 0
 
     def stable_shuffled_ids() -> list[int]:
+        """Return a seed-stable shuffled copy of all local agent ids for tie-breaking."""
         ids = list(all_ids)
         rng.shuffle(ids)
         return ids
@@ -251,6 +261,7 @@ def _ba_hub_order_indices(
     # priority first, then lightly cluster equal-priority tails by initial opinion.
     if strategy not in {"default", "networkx_default", "none", "custom"} and homophily and opinions is not None:
         def priority_group(i: int):
+            """Group agents by the selected BA hub-priority rule before final ordering."""
             op = get_op(i)
             if strategy == "positive":
                 return -op
@@ -336,6 +347,7 @@ def _ba_selected_priority_indices(
     rng = random.Random(seed)
 
     def get_op(i: int) -> int:
+        """Return the integer initial opinion for an agent, using zero when it is unavailable."""
         if opinions is None:
             return 0
         try:
@@ -347,6 +359,7 @@ def _ba_selected_priority_indices(
                 return 0
 
     def stable_shuffled_ids() -> list[int]:
+        """Return a seed-stable shuffled copy of all local agent ids for tie-breaking."""
         ids = list(all_ids)
         rng.shuffle(ids)
         return ids
@@ -622,6 +635,7 @@ def _political_score(pol: Any) -> int:
 
 
 def _education_index(edu: Any) -> int | None:
+    """Map education labels to an ordered numeric level for pair-score comparison."""
     if edu is None:
         return None
     s = str(edu).strip().lower()
@@ -818,6 +832,7 @@ def maybe_add_new_friends_before_interaction(
     new_edges_added = 0
 
     def try_form_edges(focal: int, via: int) -> None:
+        """Attempt friend-of-friend edge additions for one focal endpoint during evolving-network updates."""
         nonlocal new_edges_added
         if new_edges_added >= max_new_edges_per_step:
             return

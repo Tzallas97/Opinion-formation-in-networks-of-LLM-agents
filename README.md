@@ -5,6 +5,8 @@ agents, where every agent is a local large language model (Qwen, served by
 Ollama). Agents hold a position on a topic from −2 (reject) to +2 (accept),
 talk to their neighbours over a network, and update what they believe.
 
+![Two populations of LLM agents forming opinions over a network](assets/network_opinion_dynamics.png)
+
 ## Synopsis
 
 Simulating opinion dynamics helps us understand phenomena such as polarisation

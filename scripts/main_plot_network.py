@@ -1,3 +1,11 @@
+"""Post-processing and visualization utilities for LLM opinion-dynamics runs.
+
+This script reads simulation CSV outputs, reconstructs run-level trajectories and
+network summaries, computes B/D/P and transition diagnostics, and writes figures,
+CSVs, GIFs, and HTML visualizations. It does not change simulation outputs; it is
+an analysis layer over completed runs.
+"""
+
 import argparse
 import os
 
@@ -9,11 +17,11 @@ import glob
 import re
 import warnings
 import networkx as nx
-import glob
 import plotly.graph_objects as go
 
 
 def sanitize_model_name_for_path(model_name: str) -> str:
+    """Normalize an Ollama/model name so it can be used safely in result-folder paths."""
     s = str(model_name or "").strip()
     if not s:
         return "qwen3_8b"
@@ -21,6 +29,7 @@ def sanitize_model_name_for_path(model_name: str) -> str:
 
 
 def parse_args():
+    """Parse command-line options for locating simulation outputs and selecting plot formats."""
     parser = argparse.ArgumentParser(
         description=(
             "Plot opinion trajectories + initial/final distributions "
@@ -95,18 +104,21 @@ def parse_args():
     return parser.parse_args()
 
 def _plot_safe_file_token(s: str) -> str:
+    """Render one diagnostic plot for the current simulation run."""
     s = re.sub(r"[^A-Za-z0-9._-]+", "_", str(s or "").strip())
     s = s.strip("._")
     return s or "run"
 
 
 def _output_base_token(args) -> str:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     raw = args.output_file if getattr(args, "output_file", "") else f"seed{getattr(args, 'seed', '')}"
     raw = os.path.splitext(os.path.basename(str(raw or "").strip()))[0]
     return _plot_safe_file_token(raw or f"seed{getattr(args, 'seed', '')}")
 
 
 def _version_root_token(version_set: str) -> str:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     s = str(version_set or "").strip()
     m = re.match(r"^(v\d+)", s, flags=re.I)
     return _plot_safe_file_token((m.group(1).lower() if m else s) or "v")
@@ -166,11 +178,13 @@ def _short_run_base_from_args(args) -> str:
 
 
 def _old_run_base_from_args(args) -> str:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     base_name = args.output_file if getattr(args, "output_file", "") else f"seed{args.seed}"
     return f"{base_name}_{args.num_agents}_{args.num_steps}_{args.version_set}_{args.date}_{args.distribution}"
 
 
 def _model_results_root(args) -> str:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     model_name = sanitize_model_name_for_path(args.model_name)
     return os.path.join("results", "opinion_dynamics", "Flache_2017", model_name)
 
@@ -209,6 +223,7 @@ def _experiment_folder_candidates(args) -> list[str]:
 
 
 def build_experiment_folder(args) -> str:
+    """Resolve the result folder for a run, supporting the naming scheme used by the simulation."""
     for cand in _experiment_folder_candidates(args):
         if os.path.isdir(cand):
             return cand
@@ -217,6 +232,7 @@ def build_experiment_folder(args) -> str:
 
 
 def _score_candidate_path(path: str, args, *, token: str = "") -> tuple[int, int, str]:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     b = os.path.basename(path)
     folder = os.path.basename(os.path.dirname(path))
     short = _short_run_base_from_args(args)
@@ -243,6 +259,7 @@ def _score_candidate_path(path: str, args, *, token: str = "") -> tuple[int, int
 
 
 def _find_existing_csv(args, *, description: str, candidate_names: list[str], glob_tokens: list[str]) -> str:
+    """Locate a required CSV by trying known names first and glob fallbacks second."""
     tried = []
     matches = []
     for results_dir in _experiment_folder_candidates(args):
@@ -263,7 +280,7 @@ def _find_existing_csv(args, *, description: str, candidate_names: list[str], gl
         primary_token = glob_tokens[0] if glob_tokens else ""
         return sorted((_score_candidate_path(m, args, token=primary_token) for m in matches))[-1][2]
     raise FileNotFoundError(
-        f"Could not find {description}. Tried compact and legacy names:\n" + "\n".join(tried[:80])
+        f"Could not find {description}. Tried compact and compatibility names:\n" + "\n".join(tried[:80])
     )
 
 def extract_version_root(version_set: str) -> str:
@@ -276,6 +293,7 @@ def extract_version_root(version_set: str) -> str:
     
 
 def build_input_csv_path(args) -> str:
+    """Locate the opinion-change CSV that contains the belief trajectory for every agent."""
     base_name = args.output_file if args.output_file else f"seed{args.seed}"
     old_stem = f"{base_name}_{args.num_agents}_{args.num_steps}_{args.version_set}"
     short = _short_run_base_from_args(args)
@@ -293,6 +311,7 @@ def build_input_csv_path(args) -> str:
 
 
 def build_input_step_summary_csv_path(args) -> str:
+    """Locate the per-step summary CSV used for move-rate and population-metric diagnostics."""
     base_name = args.output_file if args.output_file else f"seed{args.seed}"
     old_stem = f"{base_name}_{args.num_agents}_{args.num_steps}_{args.version_set}"
     short = _short_run_base_from_args(args)
@@ -305,6 +324,7 @@ def build_input_step_summary_csv_path(args) -> str:
 
 
 def build_input_agent_summary_csv_path(args) -> str:
+    """Locate the agent summary CSV that stores final beliefs, persona fields, and network metadata."""
     base_name = args.output_file if args.output_file else f"seed{args.seed}"
     old_stem = f"{base_name}_{args.num_agents}_{args.num_steps}_{args.version_set}"
     short = _short_run_base_from_args(args)
@@ -317,6 +337,7 @@ def build_input_agent_summary_csv_path(args) -> str:
 
 
 def build_input_run_metrics_csv_path(args) -> str:
+    """Locate the run-level metrics CSV written by the simulation."""
     base_name = args.output_file if args.output_file else f"seed{args.seed}"
     old_stem = f"{base_name}_{args.num_agents}_{args.num_steps}_{args.version_set}"
     short = _short_run_base_from_args(args)
@@ -329,6 +350,7 @@ def build_input_run_metrics_csv_path(args) -> str:
 
 
 def build_input_repair_events_csv_path(args) -> str:
+    """Locate the repair-events CSV used for protocol-compliance diagnostics."""
     base_name = args.output_file if args.output_file else f"seed{args.seed}"
     short = _short_run_base_from_args(args)
     candidate_names = [
@@ -341,7 +363,7 @@ def build_input_repair_events_csv_path(args) -> str:
 
 
 def build_input_rag_retrieval_csv_path(args) -> str:
-    """Find the RAG retrieval CSV under either compact or legacy result folders."""
+    """Find the RAG retrieval CSV under either compact or compatibility result folders."""
     base_name = args.output_file if args.output_file else f"seed{args.seed}"
     short = _short_run_base_from_args(args)
     candidate_names = [
@@ -353,7 +375,7 @@ def build_input_rag_retrieval_csv_path(args) -> str:
 
 
 def build_input_interactions_csv_path(args) -> str:
-    """Find interactions CSV from compact qwen13+ or legacy runtime names."""
+    """Find interactions CSV from compact qwen13+ or compatibility runtime names."""
     base_name = args.output_file if args.output_file else f"seed{args.seed}"
     old_stem = f"{base_name}_{args.num_agents}_{args.num_steps}_{args.version_set}"
     short = _short_run_base_from_args(args)
@@ -367,6 +389,7 @@ def build_input_interactions_csv_path(args) -> str:
     return path
 
 def _build_plot_subdir(csv_path: str, args) -> str:
+    """Create and return the plot output directory associated with an input run CSV."""
     model_name = sanitize_model_name_for_path(args.model_name)
     experiment_id = "Flache_2017"
     version_root = extract_version_root(args.version_set)
@@ -391,14 +414,16 @@ def _build_plot_subdir(csv_path: str, args) -> str:
 
 
 def _get_run_stem(csv_path: str) -> str:
+    """Derive the run stem used as a prefix for plot and diagnostic output files."""
     csv_basename = os.path.basename(csv_path)
     csv_stem, _ = os.path.splitext(csv_basename)
-    # Legacy runtime used *_network_opinion_change; qwen13+ uses *_opinion_change.
+    # Earlier runtime used *_network_opinion_change; qwen13+ uses *_opinion_change.
     csv_stem = csv_stem.replace("_network_opinion_change", "")
     csv_stem = csv_stem.replace("_opinion_change", "")
     return csv_stem
 
 def build_output_timeseries_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     out_file = f"{run_stem}_timeseries.{args.figure_file_type}"
@@ -406,6 +431,7 @@ def build_output_timeseries_path(args, csv_path: str) -> str:
 
 
 def build_output_histogram_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     out_file = f"{run_stem}_final_distribution.{args.figure_file_type}"
@@ -413,6 +439,7 @@ def build_output_histogram_path(args, csv_path: str) -> str:
 
 
 def build_output_initial_histogram_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     out_file = f"{run_stem}_initial_distribution.{args.figure_file_type}"
@@ -438,6 +465,7 @@ def build_output_bdp_timeseries_path(args, csv_path: str) -> str:
     return os.path.join(out_dir, out_file)
 
 def build_output_bdp_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     out_file = f"{run_stem}_BDP_timeseries.{args.figure_file_type}"
@@ -463,23 +491,27 @@ def build_output_distribution_gif_path(args, csv_path: str) -> str:
     return os.path.join(out_dir, f"{run_stem}_opinion_distribution_evolution.gif")
 
 def build_output_markov_counts_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_markov_transition_counts.csv")
 
 
 def build_output_markov_probs_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_markov_transition_probs.csv")
 
 
 def build_output_markov_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_markov_transition_matrix.{args.figure_file_type}")
 
 def build_output_markov_counts_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(
@@ -489,184 +521,216 @@ def build_output_markov_counts_plot_path(args, csv_path: str) -> str:
 
 
 def build_output_step_movement_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_step_movement_intensity.{args.figure_file_type}")
 
 
 def build_output_cumulative_drift_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_cumulative_drift.{args.figure_file_type}")
 
 
 def build_output_profile_trajectory_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_trajectory_by_profile.{args.figure_file_type}")
 
 
 def build_output_final_distribution_by_profile_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_final_distribution_by_profile.{args.figure_file_type}")
 
 
 def build_output_movement_by_profile_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_movement_by_profile.{args.figure_file_type}")
 
 
 def build_output_agent_small_multiples_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_agent_small_multiples.{args.figure_file_type}")
 
 
 def build_output_markov_window_counts_path(args, csv_path: str, label: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_markov_transition_counts_{label}.csv")
 
 
 def build_output_markov_window_probs_path(args, csv_path: str, label: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_markov_transition_probs_{label}.csv")
 
 
 def build_output_markov_window_plot_path(args, csv_path: str, label: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_markov_transition_matrix_{label}.{args.figure_file_type}")
 
 
 def build_output_markov_window_counts_plot_path(args, csv_path: str, label: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_markov_transition_counts_{label}.{args.figure_file_type}")
 
 
 def build_output_cue_metrics_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_step2_cue_concentration.csv")
 
 
 def build_output_cue_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_step2_cue_concentration.{args.figure_file_type}")
 
 
 def build_output_repair_timeseries_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_repair_events_over_time.{args.figure_file_type}")
 
 
 def build_output_repair_tags_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_repair_tag_counts.{args.figure_file_type}")
 
 
 def build_output_repair_tags_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_repair_tag_counts.csv")
 
 def build_output_source_provenance_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_source_provenance.{args.figure_file_type}")
 
 
 def build_output_source_provenance_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_source_provenance.csv")
 
 
-# Backward-compatible aliases for earlier patch names / IDE stale references
+# Backward-compatible aliases for earlier function names / IDE references
 def build_output_source_provenance_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     return build_output_source_provenance_plot_path(args, csv_path)
 
 def _build_output_source_provenance_plot_path(args, csv_path: str) -> str:
+    """Build a derived object, command, path, or UI component used by the local pipeline."""
     return build_output_source_provenance_plot_path(args, csv_path)
 
 def _build_output_source_provenance_csv_path(args, csv_path: str) -> str:
+    """Build a derived object, command, path, or UI component used by the local pipeline."""
     return build_output_source_provenance_csv_path(args, csv_path)
 
 
 def build_output_individual_trajectories_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_individual_belief_trajectories.{args.figure_file_type}")
 
 
 def build_output_persona_trait_delta_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_persona_trait_delta.csv")
 
 
 def build_output_persona_trait_delta_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_persona_trait_delta.{args.figure_file_type}")
 
 
 def build_output_rag_direction_breakdown_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_rag_direction_breakdown.csv")
 
 
 def build_output_rag_direction_breakdown_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_rag_direction_breakdown.{args.figure_file_type}")
 
 
 def build_output_ego_network_timeline_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_ego_network_belief_timelines.{args.figure_file_type}")
 
 
 def build_output_edge_belief_diff_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_edge_belief_differential_heatmap.csv")
 
 
 def build_output_edge_belief_diff_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_edge_belief_differential_heatmap.{args.figure_file_type}")
 
 
 def build_output_run_summary_card_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_summary_card.csv")
 
 
 def build_output_run_summary_card_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_summary_card.{args.figure_file_type}")
 
 
 def build_output_agent_neighborhood_alignment_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_agent_neighborhood_alignment.csv")
 
 
 def build_output_agent_neighborhood_alignment_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_agent_neighborhood_alignment.{args.figure_file_type}")
@@ -674,24 +738,28 @@ def build_output_agent_neighborhood_alignment_plot_path(args, csv_path: str) -> 
 
 
 def build_output_paired_distribution_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_initial_final_distribution_pair.{args.figure_file_type}")
 
 
 def build_output_exposure_ecology_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_exposure_ecology.csv")
 
 
 def build_output_exposure_ecology_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_exposure_ecology.{args.figure_file_type}")
 
 
 def build_output_final_belief_strip_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_final_belief_strip_by_trait.{args.figure_file_type}")
@@ -703,6 +771,7 @@ def plot_opinion_trajectories(
     fig_type: str,
     num_agents: int,
 ):
+    """Plot each agent belief trajectory across time from the opinion-change table."""
     df = pd.read_csv(csv_path)
 
     if "time_step" not in df.columns:
@@ -792,6 +861,7 @@ def plot_opinion_trajectories(
 
 
 def compute_B_D_P(df, agent_cols, row_index):
+    """Compute population mean belief, diversity, and polarization for a belief vector."""
     opinions = df.iloc[row_index][agent_cols].values.astype(float)
     B = opinions.mean()
     D = opinions.std(ddof=0)
@@ -930,6 +1000,7 @@ def plot_distribution_with_BDP(opinions, B, D, P, out_path, fig_type, title):
 
 
 def plot_initial_distribution(csv_path: str, out_path: str, num_agents: int, fig_type: str):
+    """Plot the initial distribution of agent beliefs."""
     df = pd.read_csv(csv_path)
     all_cols = list(df.columns)
     agent_cols = all_cols[-num_agents:]
@@ -938,6 +1009,7 @@ def plot_initial_distribution(csv_path: str, out_path: str, num_agents: int, fig
 
 
 def plot_final_distribution(csv_path: str, out_path: str, num_agents: int, fig_type: str):
+    """Plot the final distribution of agent beliefs."""
     df = pd.read_csv(csv_path)
     all_cols = list(df.columns)
     agent_cols = all_cols[-num_agents:]
@@ -946,6 +1018,7 @@ def plot_final_distribution(csv_path: str, out_path: str, num_agents: int, fig_t
     
     
 def save_BDP_timeseries(csv_path: str, out_path: str, num_agents: int) -> None:
+    """Write a CSV with B, D, and P values for every recorded time step."""
     df = pd.read_csv(csv_path)
     all_cols = list(df.columns)
     agent_cols = all_cols[-num_agents:]
@@ -962,6 +1035,7 @@ def save_BDP_timeseries(csv_path: str, out_path: str, num_agents: int) -> None:
     
     
 def plot_BDP_timeseries_from_csv(bdp_csv_path: str, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(bdp_csv_path)
 
     plt.figure(figsize=(4, 4) if fig_type == "png" else (3.2, 3.2))
@@ -990,6 +1064,7 @@ def plot_BDP_timeseries_from_csv(bdp_csv_path: str, out_path: str, fig_type: str
     print(f"Saved B,D,P timeseries plot to: {out_path}")
     
 def plot_step_movement_from_summary(step_summary_csv_path: str, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(step_summary_csv_path)
     if df.empty:
         return
@@ -1026,6 +1101,7 @@ def plot_step_movement_from_summary(step_summary_csv_path: str, out_path: str, f
 
 
 def plot_cumulative_drift_from_summary(step_summary_csv_path: str, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(step_summary_csv_path).sort_values("time_step").reset_index(drop=True)
     if df.empty:
         return
@@ -1050,6 +1126,7 @@ def plot_cumulative_drift_from_summary(step_summary_csv_path: str, out_path: str
 
 
 def save_source_provenance_counts(step_summary_csv_path: str, out_csv_path: str) -> pd.DataFrame:
+    """Save a generated table, setting, or figure to disk with project naming conventions."""
     df = pd.read_csv(step_summary_csv_path)
     if "observable_primary_source" not in df.columns:
         raise ValueError("Step summary CSV does not contain observable_primary_source.")
@@ -1062,6 +1139,7 @@ def save_source_provenance_counts(step_summary_csv_path: str, out_csv_path: str)
 
 
 def plot_source_provenance_from_summary(step_summary_csv_path: str, out_path: str, out_csv_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     counts = save_source_provenance_counts(step_summary_csv_path, out_csv_path)
     if counts.empty:
         raise ValueError("No provenance rows available.")
@@ -1074,6 +1152,7 @@ def plot_source_provenance_from_summary(step_summary_csv_path: str, out_path: st
 
 
 def _profile_series_map(agent_summary_df: pd.DataFrame) -> dict:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     if agent_summary_df.empty or "agent_name" not in agent_summary_df.columns:
         return {}
     profile_col = "epistemic_profile" if "epistemic_profile" in agent_summary_df.columns else None
@@ -1086,6 +1165,7 @@ def _profile_series_map(agent_summary_df: pd.DataFrame) -> dict:
 
 
 def plot_trajectory_by_profile(csv_path: str, agent_summary_csv_path: str, out_path: str, fig_type: str, num_agents: int) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(csv_path)
     agents = pd.read_csv(agent_summary_csv_path)
     if df.empty or agents.empty:
@@ -1113,6 +1193,7 @@ def plot_trajectory_by_profile(csv_path: str, agent_summary_csv_path: str, out_p
 
 
 def plot_final_distribution_by_profile(agent_summary_csv_path: str, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(agent_summary_csv_path)
     if df.empty or "final_rating" not in df.columns:
         return
@@ -1140,6 +1221,7 @@ def plot_final_distribution_by_profile(agent_summary_csv_path: str, out_path: st
 
 
 def plot_movement_by_profile(step_summary_csv_path: str, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(step_summary_csv_path)
     if df.empty or "listener_epistemic_profile" not in df.columns or "move_direction" not in df.columns:
         return
@@ -1163,6 +1245,7 @@ def plot_movement_by_profile(step_summary_csv_path: str, out_path: str, fig_type
 
 
 def plot_agent_small_multiples(csv_path: str, agent_summary_csv_path: str, out_path: str, fig_type: str, num_agents: int) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(csv_path)
     agents = pd.read_csv(agent_summary_csv_path)
     if df.empty or agents.empty:
@@ -1197,6 +1280,7 @@ def plot_agent_small_multiples(csv_path: str, agent_summary_csv_path: str, out_p
 
 
 def markov_windows_from_max_step(max_step: int):
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     max_step = int(max(1, max_step))
     cut1 = int(np.ceil(max_step / 3.0))
     cut2 = int(np.ceil((2.0 * max_step) / 3.0))
@@ -1335,6 +1419,7 @@ def make_distribution_gif(frame_paths, out_path: str, fps: int = 2):
 
 
 def save_step2_cue_metrics_from_run_metrics(run_metrics_csv_path: str, out_csv_path: str) -> pd.DataFrame:
+    """Save a generated table, setting, or figure to disk with project naming conventions."""
     df = pd.read_csv(run_metrics_csv_path)
     if df.empty or "Metric" not in df.columns or "Count" not in df.columns:
         out = pd.DataFrame(columns=["polarity", "cue_label", "count"])
@@ -1363,6 +1448,7 @@ def save_step2_cue_metrics_from_run_metrics(run_metrics_csv_path: str, out_csv_p
 
 
 def plot_step2_cue_concentration(cue_df: pd.DataFrame, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if cue_df is None or cue_df.empty:
         return
     cue_df = cue_df.copy()
@@ -1383,6 +1469,7 @@ def plot_step2_cue_concentration(cue_df: pd.DataFrame, out_path: str, fig_type: 
 
 
 def save_repair_tag_counts(repair_events_csv_path: str, out_csv_path: str) -> pd.DataFrame:
+    """Save a generated table, setting, or figure to disk with project naming conventions."""
     df = pd.read_csv(repair_events_csv_path)
     if df.empty or "Repair Tags" not in df.columns:
         out = pd.DataFrame(columns=["repair_tag", "count"])
@@ -1400,6 +1487,7 @@ def save_repair_tag_counts(repair_events_csv_path: str, out_csv_path: str) -> pd
 
 
 def plot_repair_events_over_time(repair_events_csv_path: str, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(repair_events_csv_path)
     if df.empty or "Time Step" not in df.columns:
         return
@@ -1419,6 +1507,7 @@ def plot_repair_events_over_time(repair_events_csv_path: str, out_path: str, fig
 
 
 def plot_repair_tag_counts(repair_tag_df: pd.DataFrame, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if repair_tag_df is None or repair_tag_df.empty:
         return
     top = repair_tag_df.head(20).iloc[::-1]
@@ -1441,7 +1530,7 @@ def plot_repair_tag_counts(repair_tag_df: pd.DataFrame, out_path: str, fig_type:
 
 
 def _collect_edge_files(results_dir: str, out_prefix: str, version_set: str) -> list[str]:
-    """Collect edge CSVs for compact qwen13+ and legacy naming schemes."""
+    """Collect edge CSVs for compact qwen13+ and compatibility naming schemes."""
     patterns = []
     if version_set:
         patterns.extend([
@@ -1460,6 +1549,7 @@ def _collect_edge_files(results_dir: str, out_prefix: str, version_set: str) -> 
         files.extend(glob.glob(pattern))
 
     def _step_key(p: str) -> tuple[int, str]:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         base = os.path.basename(p)
         m = re.search(r"_step_(\d+)", base)
         return (int(m.group(1)) if m else 10**9, base)
@@ -1594,6 +1684,7 @@ def generate_network_frames_and_gif(
         dmax = max(deg_values) if deg_values else 0
 
         def _scale_node_size(d: int) -> float:
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             if dmax <= dmin:
                 return 380.0
             min_size, max_size = 220.0, 1050.0
@@ -1718,6 +1809,7 @@ def generate_network_3d_html(
 
     # Utility: build Plotly trace arrays for a given graph + opinions row
     def _edge_xyz_lines(G: nx.Graph):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         xe, ye, ze = [], [], []
         for u, v in G.edges():
             x0, y0, z0 = pos3d[u]
@@ -1729,6 +1821,7 @@ def generate_network_3d_html(
 
     def _node_xyz_and_colors_and_sizes(G: nx.Graph, row_op: pd.Series):
         # Degree per node at this step
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         deg = dict(G.degree())
 
         # Sizes: map degree range -> marker size range
@@ -1739,6 +1832,7 @@ def generate_network_3d_html(
         dmin, dmax = min(deg_values), max(deg_values)
 
         def _scale(d: int) -> float:
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             if dmax == dmin:
                 return float((min_size + max_size) / 2)
             return min_size + (d - dmin) * (max_size - min_size) / (dmax - dmin)
@@ -1762,6 +1856,7 @@ def generate_network_3d_html(
     # 4) Create initial frame from the first edge file
     # Parse step from filename (same pattern you already use)
     def _time_step_from_edge_file(p: str) -> int | None:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         base = os.path.basename(p)
         m = re.search(r"_step_(\d+)", base)
         if not m:
@@ -1784,6 +1879,7 @@ def generate_network_3d_html(
 
     # Build graph for initial frame
     def _graph_from_edge_file(edge_path: str) -> nx.Graph:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         df_edges = pd.read_csv(edge_path)
         G = nx.Graph()
         for _, r in df_edges.iterrows():
@@ -1913,66 +2009,77 @@ def generate_network_3d_html(
 # -----------------------------
 
 def build_output_run_report_summary_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_run_report_summary.csv")
 
 
 def build_output_run_report_dashboard_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_run_report_dashboard.{args.figure_file_type}")
 
 
 def build_output_influence_matrix_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_influence_matrix.csv")
 
 
 def build_output_influence_matrix_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_influence_matrix.{args.figure_file_type}")
 
 
 def build_output_theme_effectiveness_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_theme_effectiveness.csv")
 
 
 def build_output_theme_effectiveness_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_theme_effectiveness.{args.figure_file_type}")
 
 
 def build_output_network_assortativity_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_network_assortativity.csv")
 
 
 def build_output_network_assortativity_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_network_assortativity.{args.figure_file_type}")
 
 
 def build_output_ba_hub_assignment_csv_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_ba_hub_assignment_metrics.csv")
 
 
 def build_output_ba_hub_assignment_plot_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_ba_hub_assignment_metrics.{args.figure_file_type}")
 
 
 def _first_existing_path(paths):
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     for path in paths:
         if path and os.path.exists(path):
             return path
@@ -1980,6 +2087,7 @@ def _first_existing_path(paths):
 
 
 def _try_builder(builder, args):
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     try:
         return builder(args)
     except Exception:
@@ -1987,25 +2095,28 @@ def _try_builder(builder, args):
 
 
 def _numeric_series(df: pd.DataFrame, col: str, default=np.nan) -> pd.Series:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     if df is None or df.empty or col not in df.columns:
         return pd.Series([default] * (0 if df is None else len(df)), index=(None if df is None else df.index), dtype="float64")
     return pd.to_numeric(df[col], errors="coerce")
 
 
 def _valid_step_rows(step_summary_df: pd.DataFrame) -> pd.DataFrame:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     if step_summary_df is None or step_summary_df.empty:
         return pd.DataFrame()
     df = step_summary_df.copy()
     if "is_synthetic" in df.columns:
         df = df[pd.to_numeric(df["is_synthetic"], errors="coerce").fillna(0).astype(int) == 0].copy()
     if "simulation_active" in df.columns:
-        # Keep active rows and legacy rows where the column is blank.
+        # Keep active rows and compatibility rows where the column is blank.
         active = pd.to_numeric(df["simulation_active"], errors="coerce")
         df = df[(active.fillna(1).astype(int) == 1)].copy()
     return df.reset_index(drop=True)
 
 
 def _rating_distribution_counts(values) -> dict:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     states = [-2, -1, 0, 1, 2]
     vals = pd.Series(values).dropna().astype(int).tolist()
     counts = {s: int(vals.count(s)) for s in states}
@@ -2013,6 +2124,7 @@ def _rating_distribution_counts(values) -> dict:
 
 
 def _rating_entropy(counts: dict) -> float:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     arr = np.asarray([counts.get(s, 0) for s in [-2, -1, 0, 1, 2]], dtype=float)
     total = float(arr.sum())
     if total <= 0:
@@ -2023,10 +2135,12 @@ def _rating_entropy(counts: dict) -> float:
 
 
 def _dist_compact(counts: dict) -> str:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     return ";".join(f"{s}:{int(counts.get(s, 0))}" for s in [-2, -1, 0, 1, 2])
 
 
 def _belief_stats_from_values(values) -> dict:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     vals = np.asarray(pd.Series(values).dropna().astype(float).tolist(), dtype=float)
     if vals.size == 0:
         return {"B": 0.0, "D": 0.0, "P": 0.0, "entropy": 0.0, "positive_share": 0.0, "negative_share": 0.0, "zero_share": 0.0, "edge_share": 0.0}
@@ -2050,12 +2164,14 @@ def _belief_stats_from_values(values) -> dict:
 
 
 def _sum_col(df: pd.DataFrame, col: str) -> int:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     if df is None or df.empty or col not in df.columns:
         return 0
     return int(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
 
 
 def _count_bool(mask) -> int:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     try:
         return int(pd.Series(mask).fillna(False).astype(bool).sum())
     except Exception:
@@ -2063,6 +2179,7 @@ def _count_bool(mask) -> int:
 
 
 def _first_nonempty(df: pd.DataFrame, col: str, default=""):
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     if df is None or df.empty or col not in df.columns:
         return default
     vals = df[col].dropna().astype(str).map(str.strip)
@@ -2145,6 +2262,7 @@ def save_run_report_summary(
             run_metrics_df = pd.DataFrame()
 
     def _metric_count(metric_name: str) -> int:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if run_metrics_df.empty or "Metric" not in run_metrics_df.columns or "Count" not in run_metrics_df.columns:
             return 0
         sub = run_metrics_df[run_metrics_df["Metric"].astype(str) == metric_name]
@@ -2249,6 +2367,7 @@ def save_run_report_summary(
 
 
 def plot_run_report_dashboard(report_df: pd.DataFrame, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if report_df is None or report_df.empty:
         return
     row = report_df.iloc[0]
@@ -2317,6 +2436,7 @@ def plot_run_report_dashboard(report_df: pd.DataFrame, out_path: str, fig_type: 
 
 
 def save_influence_matrix(step_summary_csv_path: str, out_csv_path: str) -> pd.DataFrame:
+    """Save a generated table, setting, or figure to disk with project naming conventions."""
     df = _valid_step_rows(pd.read_csv(step_summary_csv_path))
     if df.empty:
         out = pd.DataFrame(columns=["listener_pre_belief", "speaker_stance_label", "events"])
@@ -2367,6 +2487,7 @@ def save_influence_matrix(step_summary_csv_path: str, out_csv_path: str) -> pd.D
 
 
 def plot_influence_matrix(influence_df: pd.DataFrame, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if influence_df is None or influence_df.empty:
         return
     states = [-2, -1, 0, 1, 2]
@@ -2419,6 +2540,7 @@ _THEME_PATTERNS = {
 
 
 def classify_argument_themes(text: str) -> list[str]:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     s = re.sub(r"\s+", " ", str(text or "")).strip().lower()
     if not s:
         return []
@@ -2430,6 +2552,7 @@ def classify_argument_themes(text: str) -> list[str]:
 
 
 def save_theme_effectiveness(step_summary_csv_path: str, out_csv_path: str) -> pd.DataFrame:
+    """Save a generated table, setting, or figure to disk with project naming conventions."""
     df = _valid_step_rows(pd.read_csv(step_summary_csv_path))
     if df.empty:
         out = pd.DataFrame(columns=["theme", "events"])
@@ -2482,6 +2605,7 @@ def save_theme_effectiveness(step_summary_csv_path: str, out_csv_path: str) -> p
 
 
 def plot_theme_effectiveness(theme_df: pd.DataFrame, out_path: str, fig_type: str, top_n: int = 14) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if theme_df is None or theme_df.empty:
         return
     df = theme_df.sort_values("events", ascending=False).head(top_n).copy()
@@ -2509,6 +2633,7 @@ def plot_theme_effectiveness(theme_df: pd.DataFrame, out_path: str, fig_type: st
 
 
 def _sign_label_from_rating(v) -> str:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     try:
         x = int(v)
     except Exception:
@@ -2521,6 +2646,7 @@ def _sign_label_from_rating(v) -> str:
 
 
 def _graph_from_edge_file_with_nodes(edge_path: str, agent_names: list[str]) -> nx.Graph:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     df_edges = pd.read_csv(edge_path)
     G = nx.Graph()
     for _, r in df_edges.iterrows():
@@ -2594,6 +2720,7 @@ def _safe_attribute_assortativity(G: nx.Graph, attr: str) -> float:
 
 
 def save_network_assortativity_metrics(csv_path: str, out_prefix: str, version_set: str, num_agents: int, out_csv_path: str) -> pd.DataFrame:
+    """Save a generated table, setting, or figure to disk with project naming conventions."""
     results_dir = os.path.dirname(csv_path)
     edge_files = _collect_edge_files(results_dir, out_prefix, version_set)
     if not edge_files:
@@ -2669,6 +2796,7 @@ def save_network_assortativity_metrics(csv_path: str, out_prefix: str, version_s
 
 
 def plot_network_assortativity_metrics(metrics_df: pd.DataFrame, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if metrics_df is None or metrics_df.empty or "time_step" not in metrics_df.columns:
         return
     df = metrics_df.sort_values("time_step").copy()
@@ -2711,7 +2839,7 @@ def plot_network_assortativity_metrics(metrics_df: pd.DataFrame, out_path: str, 
 def save_ba_hub_assignment_metrics(agent_summary_csv_path: str, out_csv_path: str) -> pd.DataFrame:
     """Summarize BA target-group assignment versus realized hub status.
 
-    Reads the runtime agent summary fields produced by the BA assignment-mode patch:
+    Reads the runtime agent summary fields produced by the BA assignment-mode support:
       ba_hub_assignment_mode, ba_hub_targeted_flag, ba_early_priority_flag,
       ba_actual_hub_assigned_flag, network_top_hub_flag, network_max_degree_hub_flag.
     The output makes it explicit whether a target group merely had early BA
@@ -2748,6 +2876,7 @@ def save_ba_hub_assignment_metrics(agent_summary_csv_path: str, out_csv_path: st
         work["ba_hub_assignment_mode"] = "early_position"
 
     def _mode_value(col: str) -> str:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             vals = [str(x) for x in work[col].dropna().astype(str).unique().tolist() if str(x).strip()]
             return "|".join(sorted(vals)) if vals else ""
@@ -2755,6 +2884,7 @@ def save_ba_hub_assignment_metrics(agent_summary_csv_path: str, out_csv_path: st
             return ""
 
     def _summ(label: str, sub: pd.DataFrame) -> dict:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         n = int(len(sub))
         if n <= 0:
             return {k: (0 if k == "count" else "") for k in cols} | {"group": label}
@@ -2792,6 +2922,7 @@ def save_ba_hub_assignment_metrics(agent_summary_csv_path: str, out_csv_path: st
 
 
 def plot_ba_hub_assignment_metrics(metrics_df: pd.DataFrame, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if metrics_df is None or metrics_df.empty or "group" not in metrics_df.columns:
         return
     df = metrics_df.copy()
@@ -2879,6 +3010,7 @@ def plot_individual_belief_trajectories(csv_path: str, out_path: str, fig_type: 
 
 
 def _rating_color_map():
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     return {
         -2: "#b2182b",
         -1: "#ef8a62",
@@ -2889,6 +3021,7 @@ def _rating_color_map():
 
 
 def _final_belief_series_from_agent_summary(agent_df: pd.DataFrame) -> pd.Series:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     for col in ["final_belief", "final_rating", "current_belief"]:
         if col in agent_df.columns:
             return pd.to_numeric(agent_df[col], errors="coerce")
@@ -2896,6 +3029,7 @@ def _final_belief_series_from_agent_summary(agent_df: pd.DataFrame) -> pd.Series
 
 
 def _choose_trait_for_final_strip(agent_df: pd.DataFrame) -> str | None:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     preferred = [
         "institutional_trust",
         "epistemic_profile",
@@ -2916,6 +3050,7 @@ def _choose_trait_for_final_strip(agent_df: pd.DataFrame) -> str | None:
 
 
 def plot_paired_initial_final_distribution(csv_path: str, out_path: str, fig_type: str, num_agents: int) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(csv_path)
     if df.empty or "time_step" not in df.columns:
         return
@@ -2949,6 +3084,7 @@ def plot_paired_initial_final_distribution(csv_path: str, out_path: str, fig_typ
 
 
 def save_exposure_ecology(step_summary_csv_path: str, out_csv_path: str) -> pd.DataFrame:
+    """Save a generated table, setting, or figure to disk with project naming conventions."""
     df = _valid_step_rows(pd.read_csv(step_summary_csv_path))
     if df.empty:
         out = pd.DataFrame(columns=["time_step", "support_events", "oppose_events", "uncertain_events", "cum_support", "cum_oppose", "cum_uncertain", "cum_total"])
@@ -2983,6 +3119,7 @@ def save_exposure_ecology(step_summary_csv_path: str, out_csv_path: str) -> pd.D
 
 
 def plot_exposure_ecology(ecology_df: pd.DataFrame, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if ecology_df is None or ecology_df.empty:
         return
     df = ecology_df.copy()
@@ -3004,6 +3141,7 @@ def plot_exposure_ecology(ecology_df: pd.DataFrame, out_path: str, fig_type: str
 
 
 def plot_final_belief_strip_by_trait(agent_summary_csv_path: str, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = _agent_summary_with_delta(agent_summary_csv_path)
     if df is None or df.empty:
         return
@@ -3042,6 +3180,7 @@ def plot_final_belief_strip_by_trait(agent_summary_csv_path: str, out_path: str,
     print(f"Saved final belief strip plot to: {out_path}")
 
 def _agent_summary_with_delta(agent_summary_csv_path: str) -> pd.DataFrame:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     df = pd.read_csv(agent_summary_csv_path)
     if df.empty:
         return df
@@ -3133,6 +3272,7 @@ def _available_persona_trait_columns(agent_summary_df: pd.DataFrame) -> list[str
 
 
 def save_persona_trait_delta(agent_summary_csv_path: str, out_csv_path: str) -> pd.DataFrame:
+    """Save a generated table, setting, or figure to disk with project naming conventions."""
     df = _agent_summary_with_delta(agent_summary_csv_path)
     rows = []
     if df.empty or "total_delta" not in df.columns:
@@ -3170,6 +3310,7 @@ def save_persona_trait_delta(agent_summary_csv_path: str, out_csv_path: str) -> 
 
 
 def plot_persona_trait_delta(persona_df: pd.DataFrame, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if persona_df is None or persona_df.empty:
         return
     traits = persona_df["trait"].dropna().unique().tolist()
@@ -3194,10 +3335,12 @@ def plot_persona_trait_delta(persona_df: pd.DataFrame, out_path: str, fig_type: 
 
 
 def _split_pipe_values(value: str) -> list[str]:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     return [x.strip().lower() for x in str(value or "").split("|") if x and x.strip()]
 
 
 def _rag_direction_label(value: str) -> str:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     dirs = set(_split_pipe_values(value))
     dirs.discard("unknown")
     if not dirs:
@@ -3216,6 +3359,7 @@ def _rag_direction_label(value: str) -> str:
 
 
 def _load_valid_step_summary(step_summary_csv_path: str | None) -> pd.DataFrame:
+    """Load persisted data from disk and return a safe in-memory representation."""
     if not step_summary_csv_path or not os.path.exists(step_summary_csv_path):
         return pd.DataFrame()
     try:
@@ -3225,6 +3369,7 @@ def _load_valid_step_summary(step_summary_csv_path: str | None) -> pd.DataFrame:
 
 
 def summarize_rag_retrieval_direction_metrics(rag_retrieval_csv_path: str | None, step_summary_csv_path: str | None = None) -> dict:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     if not rag_retrieval_csv_path or not os.path.exists(rag_retrieval_csv_path):
         return {
             "rag_retrieval_rows": 0,
@@ -3276,6 +3421,7 @@ def summarize_rag_retrieval_direction_metrics(rag_retrieval_csv_path: str | None
 
 
 def save_rag_direction_breakdown(rag_retrieval_csv_path: str, step_summary_csv_path: str, out_csv_path: str) -> pd.DataFrame:
+    """Save a generated table, setting, or figure to disk with project naming conventions."""
     rag = pd.read_csv(rag_retrieval_csv_path)
     if rag.empty or "retrieved_directions" not in rag.columns:
         out = pd.DataFrame(columns=["rag_direction_label", "retrieval_rows", "mean_delta", "positive_move_rate", "negative_move_rate", "no_move_rate"])
@@ -3315,6 +3461,7 @@ def save_rag_direction_breakdown(rag_retrieval_csv_path: str, step_summary_csv_p
 
 
 def plot_rag_direction_breakdown(rag_df: pd.DataFrame, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if rag_df is None or rag_df.empty:
         return
     labels = rag_df["rag_direction_label"].astype(str)
@@ -3340,6 +3487,7 @@ def plot_rag_direction_breakdown(rag_df: pd.DataFrame, out_path: str, fig_type: 
 
 
 def _edge_pairs_from_files(edge_files: list[str]) -> list[tuple[str, str]]:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     pairs = set()
     for fp in edge_files:
         try:
@@ -3357,6 +3505,7 @@ def _edge_pairs_from_files(edge_files: list[str]) -> list[tuple[str, str]]:
 
 
 def _neighbor_map_from_edge_files(edge_files: list[str]) -> dict[str, set[str]]:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     out = {}
     for a, b in _edge_pairs_from_files(edge_files):
         out.setdefault(a, set()).add(b)
@@ -3365,6 +3514,7 @@ def _neighbor_map_from_edge_files(edge_files: list[str]) -> dict[str, set[str]]:
 
 
 def plot_ego_network_belief_timelines(csv_path: str, out_prefix: str, version_set: str, num_agents: int, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     results_dir = os.path.dirname(csv_path)
     edge_files = _collect_edge_files(results_dir, out_prefix, version_set)
     if not edge_files:
@@ -3516,6 +3666,7 @@ def plot_agent_neighborhood_alignment(alignment_df: pd.DataFrame, out_path: str,
 
 
 def save_edge_belief_differential(csv_path: str, out_prefix: str, version_set: str, num_agents: int, out_csv_path: str, sample_every: int = 10) -> pd.DataFrame:
+    """Save a generated table, setting, or figure to disk with project naming conventions."""
     results_dir = os.path.dirname(csv_path)
     edge_files = _collect_edge_files(results_dir, out_prefix, version_set)
     pairs = _edge_pairs_from_files(edge_files)
@@ -3547,6 +3698,7 @@ def save_edge_belief_differential(csv_path: str, out_prefix: str, version_set: s
 
 
 def plot_edge_belief_differential(edge_df: pd.DataFrame, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if edge_df is None or edge_df.empty:
         return
     step_cols = [c for c in edge_df.columns if str(c).startswith("step_")]
@@ -3573,6 +3725,7 @@ def plot_edge_belief_differential(edge_df: pd.DataFrame, out_path: str, fig_type
 
 
 def save_run_summary_card_data(report_df: pd.DataFrame, agent_summary_csv_path: str | None, out_csv_path: str) -> pd.DataFrame:
+    """Save a generated table, setting, or figure to disk with project naming conventions."""
     if report_df is None or report_df.empty:
         out = pd.DataFrame()
         out.to_csv(out_csv_path, index=False)
@@ -3601,6 +3754,7 @@ def save_run_summary_card_data(report_df: pd.DataFrame, agent_summary_csv_path: 
 
 
 def plot_run_summary_card(card_df: pd.DataFrame, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if card_df is None or card_df.empty:
         return
     r = card_df.iloc[0]
@@ -3644,9 +3798,9 @@ def plot_run_summary_card(card_df: pd.DataFrame, out_path: str, fig_type: str) -
 
 
 def _find_metric_csv_by_token(args, token: str) -> str:
-    """Find diagnostic CSVs from both compact and legacy names.
+    """Find diagnostic CSVs from both compact and compatibility names.
 
-    Legacy names include network_structure_summary / network_agent_metrics /
+    Compatibility names include network_structure_summary / network_agent_metrics /
     interaction_influence_events / agent_influence_summary / exposure_persuasion_summary.
     qwen13+ compact names use structure_summary / agent_metrics /
     influence_events / influence_summary / exposure_persuasion.
@@ -3673,92 +3827,109 @@ def _find_metric_csv_by_token(args, token: str) -> str:
     return _find_existing_csv(args, description=f"{token} CSV", candidate_names=candidate_names, glob_tokens=toks)
 
 def build_input_network_structure_summary_csv_path(args) -> str:
+    """Locate an input CSV produced by the simulation using known naming conventions."""
     return _find_metric_csv_by_token(args, "network_structure_summary")
 
 
 def build_input_network_agent_metrics_csv_path(args) -> str:
+    """Locate an input CSV produced by the simulation using known naming conventions."""
     return _find_metric_csv_by_token(args, "network_agent_metrics")
 
 
 def build_input_interaction_influence_events_csv_path(args) -> str:
+    """Locate an input CSV produced by the simulation using known naming conventions."""
     return _find_metric_csv_by_token(args, "interaction_influence_events")
 
 
 def build_input_agent_influence_summary_csv_path(args) -> str:
+    """Locate an input CSV produced by the simulation using known naming conventions."""
     return _find_metric_csv_by_token(args, "agent_influence_summary")
 
 
 def build_input_exposure_persuasion_summary_csv_path(args) -> str:
+    """Locate an input CSV produced by the simulation using known naming conventions."""
     return _find_metric_csv_by_token(args, "exposure_persuasion_summary")
 
 
 def build_output_network_degree_distribution_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_network_degree_distribution.{args.figure_file_type}")
 
 
 def build_output_degree_vs_total_delta_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_network_degree_vs_total_delta.{args.figure_file_type}")
 
 
 def build_output_degree_vs_influence_score_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_network_degree_vs_influence_score.{args.figure_file_type}")
 
 
 def build_output_bridge_vs_total_delta_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_bridge_score_vs_total_delta.{args.figure_file_type}")
 
 
 def build_output_bridge_vs_influence_score_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_bridge_score_vs_influence_score.{args.figure_file_type}")
 
 
 def build_output_exposure_adjusted_persuasion_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_exposure_adjusted_persuasion.{args.figure_file_type}")
 
 
 def build_output_ba_hub_target_status_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_ba_hub_target_status.{args.figure_file_type}")
 
 
 def build_output_stabilisation_timeline_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_stabilisation_timeline.{args.figure_file_type}")
 
 
 def build_output_move_count_over_time_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_move_count_over_time.{args.figure_file_type}")
 
 
 def build_output_centrality_weighted_B_path(args, csv_path: str) -> str:
+    """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     return os.path.join(out_dir, f"{run_stem}_centrality_weighted_B_over_time.{args.figure_file_type}")
 
 
 def _coerce_num(df: pd.DataFrame, col: str, default=0.0) -> pd.Series:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     if df is None or df.empty or col not in df.columns:
         return pd.Series([default] * (0 if df is None else len(df)), dtype="float64")
     return pd.to_numeric(df[col], errors="coerce").fillna(default)
 
 
 def _agent_display_labels(df: pd.DataFrame) -> list[str]:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     labels = []
     for _, row in df.iterrows():
         name = str(row.get("agent_name", "")).strip()
@@ -3775,6 +3946,7 @@ def _agent_display_labels(df: pd.DataFrame) -> list[str]:
 
 
 def _merge_agent_network_and_influence(network_agent_csv_path: str, agent_influence_csv_path: str | None = None) -> pd.DataFrame:
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     base = pd.read_csv(network_agent_csv_path)
     if base.empty:
         return base
@@ -3790,6 +3962,7 @@ def _merge_agent_network_and_influence(network_agent_csv_path: str, agent_influe
 
 
 def plot_network_degree_distribution(network_agent_csv_path: str, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(network_agent_csv_path)
     if df.empty or "network_degree" not in df.columns:
         return
@@ -3808,6 +3981,7 @@ def plot_network_degree_distribution(network_agent_csv_path: str, out_path: str,
 
 
 def plot_scatter_with_labels(df: pd.DataFrame, x_col: str, y_col: str, out_path: str, fig_type: str, title: str, xlabel: str, ylabel: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     if df is None or df.empty or x_col not in df.columns or y_col not in df.columns:
         return
     work = df.copy()
@@ -3838,6 +4012,7 @@ def plot_scatter_with_labels(df: pd.DataFrame, x_col: str, y_col: str, out_path:
 
 
 def plot_exposure_adjusted_persuasion(exposure_csv_path: str, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(exposure_csv_path)
     if df.empty:
         return
@@ -3869,6 +4044,7 @@ def plot_exposure_adjusted_persuasion(exposure_csv_path: str, out_path: str, fig
 
 
 def plot_ba_hub_target_status(network_agent_csv_path: str, agent_influence_csv_path: str | None, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = _merge_agent_network_and_influence(network_agent_csv_path, agent_influence_csv_path)
     if df.empty or "network_degree" not in df.columns:
         return
@@ -3914,6 +4090,7 @@ def plot_ba_hub_target_status(network_agent_csv_path: str, agent_influence_csv_p
 
 
 def plot_move_count_over_time(influence_events_csv_path: str, out_path: str, fig_type: str, window: int = 25) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(influence_events_csv_path)
     if df.empty or "time_step" not in df.columns:
         return
@@ -3940,6 +4117,7 @@ def plot_move_count_over_time(influence_events_csv_path: str, out_path: str, fig
 
 
 def _first_numeric_from_df(df: pd.DataFrame, col: str):
+    """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
     if df is None or df.empty or col not in df.columns:
         return None
     vals = pd.to_numeric(df[col], errors="coerce").dropna()
@@ -3949,6 +4127,7 @@ def _first_numeric_from_df(df: pd.DataFrame, col: str):
 
 
 def plot_stabilisation_timeline(bdp_csv_path: str, network_structure_csv_path: str | None, out_path: str, fig_type: str) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     bdp = pd.read_csv(bdp_csv_path)
     if bdp.empty or "time_step" not in bdp.columns or "B" not in bdp.columns:
         return
@@ -3984,6 +4163,7 @@ def plot_stabilisation_timeline(bdp_csv_path: str, network_structure_csv_path: s
 
 
 def plot_centrality_weighted_B_over_time(csv_path: str, network_agent_csv_path: str, out_path: str, fig_type: str, num_agents: int) -> None:
+    """Render one diagnostic plot for the current simulation run."""
     df = pd.read_csv(csv_path)
     agent_df = pd.read_csv(network_agent_csv_path)
     if df.empty or agent_df.empty or "time_step" not in df.columns or "network_degree" not in agent_df.columns:
@@ -4130,6 +4310,7 @@ def plot_network_influence_diagnostics(
         print(f"[network-influence] Skipping centrality-weighted B: {e}")
 
 def main():
+    """Run the full plotting/post-processing pipeline for one completed simulation run."""
     args = parse_args()
     csv_path = build_input_csv_path(args)
 

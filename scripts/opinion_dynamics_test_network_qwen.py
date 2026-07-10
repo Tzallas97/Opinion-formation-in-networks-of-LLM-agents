@@ -6,12 +6,11 @@ import re
 import csv
 import time
 import hashlib
-from datetime import date
 import urllib.parse
 import urllib.request
 import html as html_lib
 import argparse
-from numpy.random import choice, shuffle
+from numpy.random import choice
 import random
 import numpy as np
 import sys
@@ -23,7 +22,7 @@ if str(ROOT) not in sys.path:
 
 from prompts.opinion_dynamics.Flache_2017.content.fact_packs import FACT_PACKS
 from prompts.opinion_dynamics.Flache_2017.content.world_rules import WORLD_RULES as EXTERNAL_WORLD_RULES, WORLD_LABELS
-from network_models import build_small_world, build_erdos_renyi, build_barabasi_albert, choose_neighbor_scoring, choose_partner_scoring
+from network_models import build_small_world, build_erdos_renyi, build_barabasi_albert, choose_partner_scoring
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -59,6 +58,13 @@ RUN_METRICS = Counter()
 
 
 def _metric_inc(key: str, n: int = 1):
+    """
+    Increment a run-level metric counter in RUN_METRICS.
+    
+        The simulation records many protocol, repair, RAG, and interaction diagnostics as sparse
+        counters. This helper centralizes the "create if missing, then increment" pattern so new
+        diagnostics can be added without pre-declaring every possible metric key.
+    """
     try:
         RUN_METRICS[str(key)] += int(n)
     except Exception:
@@ -66,6 +72,13 @@ def _metric_inc(key: str, n: int = 1):
 
 
 def _metric_inc_transition(pre_value: int, post_value: int, prefix: str = "transition"):
+    """
+    Increment the transition counter for a listener belief movement.
+    
+        Transition counters are stored as metric keys such as trans_-1_to_0. They are later exported
+        with the run metrics and are used to reconstruct the 5x5 pre-belief by post-belief transition
+        matrix without rereading the full step summary.
+    """
     try:
         pre_i = int(pre_value)
         post_i = int(post_value)
@@ -75,6 +88,13 @@ def _metric_inc_transition(pre_value: int, post_value: int, prefix: str = "trans
 
 
 def _metric_allowed_key(allowed_ratings) -> str:
+    """
+    Convert an allowed-rating set into a stable metric suffix.
+    
+        Step-3 validators often need to group outcomes by the legal rating set shown to the model.
+        Sorting and joining the set here ensures that {0, 1} and {1, 0} produce the same exported
+        key and can be compared across runs.
+    """
     try:
         vals = [int(x) for x in (allowed_ratings or [])]
     except Exception:
@@ -83,6 +103,13 @@ def _metric_allowed_key(allowed_ratings) -> str:
 
 
 def _speaker_stance_label(value: int | None) -> str:
+    """
+    Map a numeric speaker belief to the exposure-side label used in summaries.
+    
+        The exposure/persuasion CSV collapses individual ratings into support, oppose, and neutral
+        speaker groups. This allows the analysis to ask whether support-side or oppose-side speakers
+        were more frequent and more persuasive, independently of exact rating intensity.
+    """
     try:
         v = int(value)
     except Exception:
@@ -91,11 +118,23 @@ def _speaker_stance_label(value: int | None) -> str:
 
 
 def _listener_prev_label(value: str) -> str:
+    """
+    Map a listener's pre-interaction belief to a coarse diagnostic side.
+    
+        The label is used in artifact and movement summaries where exact ratings are too granular but
+        the listener's prior side still matters, for example support-to-oppose versus same-side updates.
+    """
     v = str(value or "none").strip().lower()
     return v if v in {"none", "read", "write"} else "other"
 
 
 def _step_bucket_label(step_num: int) -> str:
+    """
+    Bucket an interaction index into early/middle/late windows for diagnostics.
+    
+        Some repair and movement rates are easier to interpret over coarse run phases than per-step.
+        The bucket labels support time-local summaries without assuming a specific total run length.
+    """
     try:
         t = int(step_num)
     except Exception:
@@ -159,11 +198,14 @@ def _same_bin_softening_tag(pre_value: int, final_value: int, explanation_text: 
     ]
     return any(re.search(p, s, flags=re.I) for p in bridge_worthy_patterns)
 
-def _reason_mentions_format(reason) -> bool:
-    s = str(reason or '').lower()
-    return ('format' in s) or ('output' in s and 'exact' in s) or ('missing_final_rating' in s)
-
 def _ensure_retry_debug_dir():
+    """
+    Create the retry-debug directory only when a debug artifact must be written.
+    
+        Most runs do not need per-attempt debug files. Delaying directory creation keeps normal output
+        folders cleaner while still allowing failed or suspicious LLM turns to be inspected when debug
+        saving is enabled.
+    """
     global RETRY_DEBUG_DIR
     if not DEBUG_RETRY_SAVE_FILES:
         return None
@@ -174,6 +216,12 @@ def _ensure_retry_debug_dir():
 
 
 def _set_native_ollama_debug_context(step: str = '', agent_name: str = '', attempt=None, label: str = ''):
+    """
+    Store contextual labels for the next native Ollama call.
+    
+        Native debug dumps need the current step, agent, stage, and file prefix in order to produce
+        useful filenames. This helper sets that transient context before the low-level LLM call.
+    """
     try:
         NATIVE_OLLAMA_DEBUG_CONTEXT['step'] = str(step or '')
         NATIVE_OLLAMA_DEBUG_CONTEXT['agent_name'] = str(agent_name or '')
@@ -184,10 +232,22 @@ def _set_native_ollama_debug_context(step: str = '', agent_name: str = '', attem
 
 
 def _clear_native_ollama_debug_context():
+    """
+    Clear the transient native-Ollama debug context after a call.
+    
+        The context is global because the low-level request function is shared by Step-2, Step-3, and
+        true-open calls. Clearing it prevents a later unrelated call from inheriting stale debug labels.
+    """
     _set_native_ollama_debug_context('', '', None, '')
 
 
 def _debug_disable_protocol_fallbacks() -> bool:
+    """
+    Return whether deterministic protocol fallbacks are intentionally disabled.
+    
+        This is a debugging switch, not a normal experimental mode. It lets a developer observe raw
+        model failures instead of immediately replacing them with safe fallback outputs.
+    """
     try:
         return bool(DEBUG_DISABLE_PROTOCOL_FALLBACKS and DEBUG_RETRY_SAVE_FILES)
     except Exception:
@@ -195,6 +255,13 @@ def _debug_disable_protocol_fallbacks() -> bool:
 
 
 def _maybe_skip_protocol_fallback(step: str, fallback_text: str, raw_text: str = '', sanitized_text: str = '') -> str:
+    """
+    Gate a deterministic fallback when raw-failure debugging is enabled.
+    
+        Normal experiments should keep fallbacks on so CSVs remain well-formed. When debugging model
+        behavior, this helper can bypass the fallback path and return the original invalid output for
+        inspection.
+    """
     if not _debug_disable_protocol_fallbacks():
         return str(fallback_text or '')
     passthrough = str(sanitized_text or raw_text or '').strip()
@@ -206,6 +273,13 @@ def _maybe_skip_protocol_fallback(step: str, fallback_text: str, raw_text: str =
 
 
 def _render_effective_request_messages(request_payload) -> str:
+    """
+    Render the exact chat messages that will be sent to the LLM.
+    
+        The function is used only for diagnostics. It serializes system, history, and current prompt
+        messages so prompt duplication, hidden history leakage, or missing qwen control tokens can be
+        inspected from debug files.
+    """
     try:
         msgs = list((request_payload or {}).get('messages') or [])
     except Exception:
@@ -226,6 +300,13 @@ def _render_effective_request_messages(request_payload) -> str:
 
 
 def _dump_native_ollama_payload_debug(prompt_text: str, request_payload, response_payload, extracted_text: str = '', extracted_thinking: str = '', note: str = ''):
+    """
+    Write native Ollama request/response payloads for failed or inspected calls.
+    
+        The native path exposes information that the LangChain wrapper may hide, including qwen
+        thinking fields and done reasons. This dump is useful when qwen returns empty content, length
+        truncation, or protocol-breaking output.
+    """
     d = _ensure_retry_debug_dir()
     if not d or not DEBUG_DUMP_NATIVE_OLLAMA_JSON:
         return None
@@ -269,6 +350,7 @@ def _dump_native_ollama_payload_debug(prompt_text: str, request_payload, respons
         return None
 
 def _clean_debug_prompt_text(prompt_text: str) -> str:
+    """Remove bulky prompt fragments before saving compact debug text."""
     s = str(prompt_text or "")
     if not s:
         return s
@@ -289,12 +371,14 @@ HARD_FAILURE_TOKENS = [
 
 
 def _reason_blob(reasons) -> str:
+    """Join validation reasons into a single searchable diagnostic string."""
     if isinstance(reasons, (list, tuple)):
         return " | ".join(str(r or "") for r in reasons).lower()
     return str(reasons or "").lower()
 
 
 def _is_hard_failure(reasons) -> bool:
+    """Classify validation reasons that should be treated as hard protocol failures."""
     low = _reason_blob(reasons)
     return any(tok in low for tok in HARD_FAILURE_TOKENS)
 
@@ -332,11 +416,13 @@ def _should_capture_native_thinking_on_fail(event_type: str, reasons) -> bool:
     return et in {"warning", "retry", "fallback", "validation", "native_rescue", "rewrite", "repair", "soft_cleanup"}
 
 def _infer_shadow_include_history(attempt) -> bool:
+    """Infer whether a shadow debug call should include conversation history."""
     a = str(attempt or '').strip().lower()
     return a not in {'1b', '1c', '2', '2b', '2c'}
 
 
 def _capture_native_thinking_shadow_debug(conversation, *, step: str, event_type: str, agent_name: str = None, attempt=None, prompt_text: str = '', include_history: bool = True):
+    """Capture qwen thinking text for failed native calls without changing the simulation state."""
     if conversation is None or not prompt_text:
         return None
     key_blob = f"{step}|{event_type}|{agent_name or ''}|{attempt}|{hashlib.sha1(str(prompt_text).encode('utf-8', errors='replace')).hexdigest()}"
@@ -398,7 +484,13 @@ def _capture_native_thinking_shadow_debug(conversation, *, step: str, event_type
 
 
 def _dump_retry_debug_event(step: str, event_type: str, agent_name: str = None, attempt: int = None, reasons=None, prompt_text: str = '', raw_text: str = '', sanitized_text: str = '', final_text: str = '', conversation=None, include_history: bool | None = None):
-    """Save warning/retry/repair/rewrite context into _retry_debug for inspection."""
+    """
+    Save one retry, warning, repair, or fallback event into the debug folder.
+    
+        These files are not part of the primary dataset. They are developer-facing artifacts used to
+        inspect why validation rejected an output, what prompt was retried, and what final text entered
+        the CSV pipeline.
+    """
     if not _should_emit_error_debug(event_type, reasons):
         return None
     d = _ensure_retry_debug_dir()
@@ -447,10 +539,23 @@ NATIVE_EVENTS_LOG_CSV_PATH = None  # always created under _retry_debug for nativ
 
 
 def _rag_logging_enabled() -> bool:
+    """
+    Return whether local RAG retrieval decisions should be logged.
+    
+        Retrieval logs are important for auditing which snippets were shown to the model. They can be
+        disabled for speed or cleaner output when retrieval provenance is not being inspected.
+    """
     return _rag_enabled_for_world(getattr(args, "world", "closed")) and str(getattr(args, "rag_backend", "off")).strip().lower() != "off"
 
 
 def _ensure_rag_retrieval_log_file():
+    """
+    Create the RAG retrieval-event CSV with a stable header.
+    
+        The retrieval log records query text, selected snippet IDs, snippet directions, and balance
+        shortfalls. It is the main audit trail for confirming that supportive, criticism, or balanced
+        RAG modes injected the expected evidence.
+    """
     global RAG_RETRIEVAL_LOG_CSV_PATH
     if not _rag_logging_enabled():
         return None
@@ -476,6 +581,13 @@ def _ensure_rag_retrieval_log_file():
 
 
 def _rag_render_section_labels(rows: list[dict], content_mode: str = 'full') -> list[str]:
+    """
+    Choose prompt section labels for retrieved snippets by evidence direction.
+    
+        Clear labels help the model distinguish claim-supporting, claim-challenging, and contextual
+        material. Keeping this mapping centralized prevents Step-2 and Step-3 from using inconsistent
+        labels for the same content mode.
+    """
     cleaned_rows = [r for r in (rows or []) if str(r.get('text', '')).strip()]
     if not cleaned_rows:
         return []
@@ -501,6 +613,12 @@ def _rag_render_section_labels(rows: list[dict], content_mode: str = 'full') -> 
 
 
 def _log_rag_retrieval(step_kind: str, prompt_variant: str, agent_name: str, query_mode: str, query_text: str, rows: list[dict], effective_top_k: int):
+    """
+    Append one local-RAG retrieval event to the provenance CSV.
+    
+        The row captures the query mode, content mode, selected chunks, and any balanced-mode shortfall.
+        These records are used to verify that a run actually received the intended evidence environment.
+    """
     csv_path = _ensure_rag_retrieval_log_file()
     if not csv_path:
         return
@@ -532,6 +650,7 @@ def _log_rag_retrieval(step_kind: str, prompt_variant: str, agent_name: str, que
 
 
 def _safe_file_token(s: str) -> str:
+    """Sanitize arbitrary text so it can be safely used inside filenames."""
     s = re.sub(r"[^A-Za-z0-9._-]+", "_", str(s or "").strip())
     s = s.strip("._")
     return s or "run"
@@ -558,6 +677,12 @@ NON_REPAIR_TAG_PREFIXES = {
 
 
 def _split_repair_tags(tags):
+    """
+    Normalize a repair-tag field into individual tag tokens.
+    
+        Repair tags may arrive as comma/pipe/semicolon-separated strings depending on the code path.
+        This helper gives metrics and summaries one consistent representation.
+    """
     tags = [str(t) for t in (tags or []) if str(t).strip()]
     soft, hard, neutral = [], [], []
     for t in tags:
@@ -570,18 +695,15 @@ def _split_repair_tags(tags):
     return {'soft': soft, 'hard': hard, 'neutral': neutral}
 
 
-def _hard_repair_tags_only(tags):
-    return _split_repair_tags(tags)['hard']
-
-
-def _soft_cleanup_tags_only(tags):
-    return _split_repair_tags(tags)['soft']
-
-
-
 
 
 def _ensure_repair_log_file():
+    """
+    Create the Step-3 repair-event CSV before the first repair is written.
+    
+        Step-3 repairs are potential interpretive confounds. A dedicated log preserves pre/post beliefs,
+        raw model output, final output, allowed ratings, and repair tags for later manual review.
+    """
     global REPAIR_LOG_CSV_PATH
     d = _ensure_retry_debug_dir()
     if not d:
@@ -616,6 +738,13 @@ def _ensure_repair_log_file():
         return None
 
 def _dump_repair_event(step: str, agent_name: str, repair_tags, raw_text_attempt_1: str, raw_text_attempt_2: str, final_text: str, pre_belief=None, speaker_belief=None, allowed_ratings=None):
+    """
+    Record one Step-3 repair or fallback event with full local context.
+    
+        The repair log is separate from the step summary because it keeps more diagnostic detail than a
+        normal interaction row should carry. It is used to determine whether qwen/protocol artifacts are
+        rare noise or structured by condition, persona, stance, or allowed set.
+    """
     tags = list(repair_tags or [])
     if not tags:
         return
@@ -713,6 +842,13 @@ def _dump_repair_event(step: str, agent_name: str, repair_tags, raw_text_attempt
                 pass
 
 def _compute_bdp_from_beliefs(beliefs):
+    """
+    Compute the population-level B, D, and P metrics from current beliefs.
+    
+        B is the mean belief, D is the population standard deviation, and P compares variance against
+        squared mean. This function is the single source for the trajectory metrics exported at every
+        time step and reported in experiment reviews.
+    """
     vals = [float(x) for x in (beliefs or [])]
     if not vals:
         return 0.0, 0.0, 0.0
@@ -726,6 +862,7 @@ def _compute_bdp_from_beliefs(beliefs):
 
 
 def _unanimous_belief(list_agents) -> int | None:
+    """Return the unanimous belief value if all agents agree, otherwise return None."""
     try:
         vals = [int(getattr(a, 'current_belief')) for a in (list_agents or [])]
     except Exception:
@@ -737,6 +874,13 @@ def _unanimous_belief(list_agents) -> int | None:
 
 
 def _write_step_summary_csv(step_summary_path: str, rows):
+    """
+    Write the per-interaction CSV that serves as the main analysis table.
+    
+        Each row corresponds to one listener update attempt and includes pre/post beliefs, deltas,
+        allowed ratings, speaker/listener identity, persona fields, network metadata, and repair tags.
+        Most downstream analyses begin from this file.
+    """
     if not step_summary_path:
         return
     try:
@@ -757,6 +901,12 @@ def _write_step_summary_csv(step_summary_path: str, rows):
 
 
 def _write_step2_event_summary_csv(step2_event_path: str, rows):
+    """
+    Write Step-2 tweet-generation diagnostics to CSV.
+    
+        This file records whether the speaker output was clean, repaired, warned, or salvaged before
+        handoff. It helps separate tweet-production artifacts from listener-update artifacts.
+    """
     if not step2_event_path:
         return
     try:
@@ -777,11 +927,23 @@ def _write_step2_event_summary_csv(step2_event_path: str, rows):
 
 
 def _reason_tag_token(reason: str) -> str:
+    """
+    Normalize a validation or warning reason into a compact metric tag.
+    
+        Free-form validator messages are hard to aggregate directly. This helper converts them to a
+        predictable token suitable for metric keys and CSV tag fields.
+    """
     s = re.sub(r'[^a-z0-9]+', '_', str(reason or '').strip().lower()).strip('_')
     return s[:120] or 'unknown'
 
 
 def _set_step2_call_info(conversation, **kwargs):
+    """
+    Store the current Step-2 call context for nested validators and loggers.
+    
+        Some Step-2 helpers are called without explicit step/agent arguments. This shared context lets
+        them attribute warnings and debug events to the correct speaker turn.
+    """
     try:
         setattr(conversation, "_last_step2_call_info", dict(kwargs))
     except Exception:
@@ -790,6 +952,13 @@ def _set_step2_call_info(conversation, **kwargs):
 
 
 def _write_agent_summary_csv(agent_summary_path: str, rows):
+    """
+    Write one aggregate row per agent after the run finishes.
+    
+        The exported fields combine final belief, total movement, move counts, speaking/listening counts,
+        persona fields, and network metrics. This table is used to connect individual trajectories to
+        persona and topology.
+    """
     if not agent_summary_path:
         return
     try:
@@ -810,6 +979,7 @@ def _write_agent_summary_csv(agent_summary_path: str, rows):
 
 
 def _csv_clean_value(v):
+    """Normalize Python values before writing them into CSV cells."""
     if v is None:
         return ""
     try:
@@ -822,6 +992,13 @@ def _csv_clean_value(v):
 
 
 def _agent_persona_fields(agent, prefix: str = "") -> dict:
+    """
+    Collect persona attributes from an Agent for CSV export.
+    
+        The simulator keeps persona data both as prompt text and structured fields. This helper exports
+        the structured version so belief movement can be grouped by epistemic profile, trust, openness,
+        demographic fields, or topic-specific traits.
+    """
     out = {}
     fields = [
         'epistemic_profile', 'institutional_trust', 'uncertainty_tolerance',
@@ -845,6 +1022,7 @@ def _agent_persona_fields(agent, prefix: str = "") -> dict:
 
 
 def _belief_side_label(value) -> str:
+    """Map a numeric belief to negative, neutral, or positive side labels."""
     try:
         v = int(value)
     except Exception:
@@ -857,7 +1035,12 @@ def _belief_side_label(value) -> str:
 
 
 def _normalize_ba_hub_assignment_mode(mode: str = "early_position") -> str:
-    """Normalize BA hub-assignment semantics used by runtime, metrics, and network builder."""
+    """
+    Normalize the selected BA hub-assignment mode across UI, CLI, and network code.
+    
+        Several historical names refer to the same semantics. This function keeps the runtime tolerant
+        of older launcher presets while ensuring metrics and output filenames use one canonical value.
+    """
     s = str(mode or "early_position").strip().lower().replace("-", "_").replace(" ", "_")
     aliases = {
         "default": "early_position",
@@ -883,12 +1066,11 @@ def _normalize_ba_hub_assignment_mode(mode: str = "early_position") -> str:
 
 
 def _parse_ba_hub_custom_indices(custom_text: str, list_agents) -> list[int]:
-    """Parse UI text for custom BA hub priority.
-
-    Supported tokens:
-    - idx:0 or index:0 for local zero-based index in the selected run sample
-    - agent_id:12 or id:12 for the original CSV agent_id
-    - exact agent name
+    """
+    Parse a custom BA hub-priority list supplied through CLI or the launcher.
+    
+        The accepted formats support explicit indices and agent names. The result is a list of local
+        agent indices used to force selected agents into high-priority BA positions when requested.
     """
     text = str(custom_text or "").strip()
     if not text:
@@ -929,7 +1111,13 @@ def _parse_ba_hub_custom_indices(custom_text: str, list_agents) -> list[int]:
 
 
 def _build_ba_hub_priority_indices(strategy: str, custom_text: str, list_agents, opinions_by_idx, seed: int | None = None) -> list[int]:
-    """Return local agent indices that should receive earliest BA positions."""
+    """
+    Build the local-agent priority order used for controlled BA hub assignment.
+    
+        Depending on the selected strategy, this may target positive agents, negative agents, actual hubs,
+        or a custom list. The priority order is passed to the network builder so hub identity is controlled
+        after graph construction rather than accidentally tied to input order.
+    """
     strategy = str(strategy or "default").strip().lower()
     if strategy == "minority":
         strategy = "opposite_majority"
@@ -941,6 +1129,12 @@ def _build_ba_hub_priority_indices(strategy: str, custom_text: str, list_agents,
     idxs = list(range(n))
 
     def op(i: int) -> int:
+        """
+        Move selected agents to the front or back of the BA priority list.
+        
+            This local helper keeps the priority-list transformations readable inside
+            _build_ba_hub_priority_indices while preserving the selected relative order.
+        """
         try:
             return int(opinions_by_idx.get(i, getattr(list_agents[i], 'init_belief', 0)))
         except Exception:
@@ -982,6 +1176,12 @@ def _build_ba_hub_priority_indices(strategy: str, custom_text: str, list_agents,
 
 
 def _compute_network_metrics_by_idx(num_agents: int, neighbors: dict, *, network_type: str, ba_hub_strategy: str = "default", ba_hub_assignment_mode: str = "early_position", ba_hub_priority_indices=None, opinions_by_idx=None) -> dict[int, dict]:
+    """
+    Compute degree and centrality diagnostics for each local agent index.
+    
+        These metrics are exported with agent summaries and hub diagnostics. They verify which agents
+        actually became high-degree nodes and support degree-weighted opinion analyses.
+    """
     priority_order = [int(i) for i in (ba_hub_priority_indices or []) if 0 <= int(i) < int(num_agents)]
     priority = set(priority_order)
     assignment_mode = _normalize_ba_hub_assignment_mode(ba_hub_assignment_mode)
@@ -1022,11 +1222,18 @@ def _compute_network_metrics_by_idx(num_agents: int, neighbors: dict, *, network
     return out
 
 def _network_metric_fields_for_idx(network_metrics_by_idx: dict, idx: int, prefix: str = "") -> dict:
+    """Return the exported network-metric field names for one agent index."""
     vals = dict((network_metrics_by_idx or {}).get(int(idx), {}) or {})
     return {f"{prefix}{k}": v for k, v in vals.items()}
 
 
 def _write_network_hub_metrics_csv(path: str, rows):
+    """
+    Write the network-level hub/centrality diagnostic CSV.
+    
+        The file is an audit artifact for BA/WS/ER experiments. It records node degree, centrality,
+        initial/final beliefs, and whether a node was selected as a targeted hub.
+    """
     if not path:
         return
     try:
@@ -1166,6 +1373,12 @@ def _build_barabasi_albert_compat(
     )
 
     def maybe_force_actual(neigh):
+        """
+        Force actual-hub reassignment when a legacy mode requires it.
+        
+            Older launcher options sometimes implied post-construction actual-hub assignment without naming
+            that mode explicitly. This local helper preserves compatibility while normalizing the final mode.
+        """
         if assignment_mode in {"actual_hubs", "early_and_actual"} and priority:
             return _relabel_neighbors_by_degree_to_priority(neigh, priority, int(num_agents))
         return neigh
@@ -1201,10 +1414,18 @@ def _build_barabasi_albert_compat(
     return early
 
 def _persona_value_norm(value) -> str:
+    """Normalize persona-field values before policy matching and validation checks."""
     return re.sub(r"\s+", " ", str(value or "")).strip().lower()
 
 
 def _compile_persona_validation_policy(*, epistemic_profile="", institutional_trust="", uncertainty_tolerance="", evidence_style="", official_narrative_suspicion="", openness_to_update="", value_orientation="", social_conformity="", agency_vs_fatalism="", conflict_style="") -> dict:
+    """
+    Translate persona traits into permissions used by output validators.
+    
+        Validators should not flag all distrust or authority language equally. This policy records when
+        a persona makes certain explanation styles expected, for example suspicion-first wording for
+        low-trust agents or source-oriented wording for authority-leaning agents.
+    """
     profile = _persona_value_norm(epistemic_profile)
     trust = _persona_value_norm(institutional_trust)
     uncertainty = _persona_value_norm(uncertainty_tolerance)
@@ -1261,11 +1482,13 @@ CURRENT_PERSONA_VALIDATION_POLICY: dict = {}
 
 
 def _set_current_persona_validation_policy(policy: dict | None):
+    """Set the active persona validation policy for the current agent call."""
     global CURRENT_PERSONA_VALIDATION_POLICY
     CURRENT_PERSONA_VALIDATION_POLICY = dict(policy or {})
 
 
 def _current_persona_validation_policy() -> dict:
+    """Return the currently active persona validation policy, if any."""
     return dict(CURRENT_PERSONA_VALIDATION_POLICY or {})
 
 
@@ -1273,6 +1496,7 @@ CURRENT_VALIDATION_CONTEXT: dict = {"prompt_text": "", "grounding_text": "", "ma
 
 
 def _derive_validation_material_profile(prompt_text: str = "", grounding_text: str = "") -> str:
+    """Classify shown material so validators know whether evidence is grounded, institutional, or distrust-related."""
     prompt_low = str(prompt_text or "").lower()
     grounding_low = str(grounding_text or "").lower()
 
@@ -1311,6 +1535,12 @@ def _derive_validation_material_profile(prompt_text: str = "", grounding_text: s
 
 
 def _set_current_validation_context(prompt_text: str = "", grounding_text: str = "", material_profile: str = ""):
+    """
+    Store the local prompt, tweet, grounding, and material profile for validators.
+    
+        Many validators need to know whether a phrase is grounded in shown RAG/fact-pack/web material.
+        This function sets that per-call context before Step-2 or Step-3 validation begins.
+    """
     global CURRENT_VALIDATION_CONTEXT
     prompt_str = str(prompt_text or "")
     grounding_str = str(grounding_text or _extract_external_grounding_text(prompt_str) or "")
@@ -1323,38 +1553,46 @@ def _set_current_validation_context(prompt_text: str = "", grounding_text: str =
 
 
 def _current_validation_context() -> dict:
+    """Return the active validation context dictionary."""
     return dict(CURRENT_VALIDATION_CONTEXT or {})
 
 
 def _current_validation_grounding_text() -> str:
+    """Return the currently shown grounding material used for strict closed-world checks."""
     return str((_current_validation_context() or {}).get("grounding_text") or "")
 
 
 def _current_validation_material_profile() -> str:
+    """Return the current material-profile flags derived from the prompt and tweet."""
     return str((_current_validation_context() or {}).get("material_profile") or "")
 
 
 def _grounding_has_distrust_family(text: str) -> bool:
+    """Detect whether shown material contains distrust or anti-institutional framing."""
     low = _persona_value_norm(text)
     return bool(re.search(r"\b(?:independent verification|verification gap|official narratives?|official story|cover-up|coverup|curated|too polished|too perfect|skeptic(?:al|ism)?|doubt|unresolved|anomaly|missing corroboration)\b", low, flags=re.I))
 
 
 def _grounding_has_authority_family(text: str) -> bool:
+    """Detect whether shown material contains authority or institutional-source framing."""
     low = _persona_value_norm(text)
     return bool(re.search(r"\b(?:official records?|historical records?|documented|widely accepted|consensus|authorities?|experts?|scientific community|credible sources?|multiple independent sources?|corroborating data|official confirmation|verified historical data|historical data|evidence left behind|retroreflectors?|lunar laser ranging)\b", low, flags=re.I))
 
 
 def _grounding_has_support_artifact_family(text: str) -> bool:
+    """Detect whether shown material contains claim-supporting concrete artifacts."""
     low = _persona_value_norm(text)
     return bool(re.search(r"\b(?:retroreflectors?|lunar laser ranging|laser ranging|telemetry|tracking|mission records?|apollo missions?|lunar samples?|moon rocks?|tracking data|mission data|brought back lunar samples)\b", low, flags=re.I))
 
 
 def _grounding_has_challenge_artifact_family(text: str) -> bool:
+    """Detect whether shown material contains claim-challenging artifact claims."""
     low = _persona_value_norm(text)
     return bool(re.search(r"\b(?:missing (?:original )?materials?|missing tapes?|sstv|unresolved anomalies?|lighting|shadows?|radiation exposure|van allen|incomplete (?:visuals?|footage|documentation)|harder to check directly|questions about (?:shadows|lighting|object behavior))\b", low, flags=re.I))
 
 
 def _grounding_supports_external_family(family: str, grounding_text: str, matched_text: str = "") -> bool:
+    """Check whether external-source wording is licensed by shown grounding material."""
     grounding = str(grounding_text or "")
     fam = str(family or "").strip().lower()
     if not grounding or not fam:
@@ -1373,6 +1611,13 @@ def _grounding_supports_external_family(family: str, grounding_text: str, matche
 
 
 def _validator_allows_generic_reason(reason: str | None, text: str = "", policy: dict | None = None) -> bool:
+    """
+    Decide whether a generic-looking reason is acceptable in the current context.
+    
+        Some explanations are normally too vague, but may be defensible when a persona or shown material
+        explicitly supports broad distrust, authority, or uncertainty language. This function prevents
+        validators from over-repairing such persona-consistent outputs.
+    """
     if _persona_allows_generic_reason(reason, text, policy):
         return True
 
@@ -1408,6 +1653,7 @@ def _validator_allows_generic_reason(reason: str | None, text: str = "", policy:
 
 
 def _validator_allows_strict_closed_phrase(reason: str | None, text: str = "", prompt_text: str = "", policy: dict | None = None) -> bool:
+    """Decide whether strict-closed wording is acceptable because it is grounded or persona-consistent."""
     if _persona_allows_strict_closed_phrase(reason, text, policy):
         return True
     grounding = str(_extract_external_grounding_text(prompt_text or _current_validation_context().get("prompt_text", "")) or _current_validation_grounding_text() or "")
@@ -1432,16 +1678,25 @@ def _validator_allows_strict_closed_phrase(reason: str | None, text: str = "", p
 
 
 def _persona_has_authority_markers(text: str) -> bool:
+    """Return whether persona text contains authority-trusting markers."""
     low = _persona_value_norm(text)
     return bool(re.search(r"\b(?:official records?|historical records?|documented|widely accepted|consensus|authorities?|experts?|scientific community|credible sources?|multiple independent sources?|corroborating data|official confirmation|verified historical data|historical data)\b", low, flags=re.I))
 
 
 def _persona_has_distrust_markers(text: str) -> bool:
+    """Return whether persona text contains distrust or suspicion markers."""
     low = _persona_value_norm(text)
     return bool(re.search(r"\b(?:institutional trust|official narratives?|official story|official stories|institutional credibility|verification gap|independent verification|cover-up|coverup|too polished|too perfect|curated|existing skepticism|remaining doubt|skepticism|doubt)\b", low, flags=re.I))
 
 
 def _persona_allows_hidden_state_phrase(text: str, policy: dict | None = None) -> bool:
+    """
+    Allow selected internal-state phrases only when persona traits justify them.
+    
+        The model is generally discouraged from saying things like "my existing skepticism." However,
+        suspicion-first or distrust personas may naturally refer to skepticism. This gate keeps that
+        exception explicit instead of allowing every internal-state phrase unconditionally.
+    """
     p = dict(policy or _current_persona_validation_policy() or {})
     if not p.get("active"):
         return False
@@ -1460,6 +1715,7 @@ def _persona_allows_hidden_state_phrase(text: str, policy: dict | None = None) -
 
 
 def _persona_allows_generic_reason(reason: str | None, text: str = "", policy: dict | None = None) -> bool:
+    """Allow otherwise-generic reasons when the active persona/context justifies them."""
     p = dict(policy or _current_persona_validation_policy() or {})
     if not p.get("active"):
         return False
@@ -1477,6 +1733,7 @@ def _persona_allows_generic_reason(reason: str | None, text: str = "", policy: d
 
 
 def _persona_allows_strict_closed_phrase(reason: str | None, text: str = "", policy: dict | None = None) -> bool:
+    """Allow strict closed-world phrases when the active persona/context justifies them."""
     p = dict(policy or _current_persona_validation_policy() or {})
     if not p.get("active"):
         return False
@@ -1522,6 +1779,7 @@ def _ensure_native_events_log_file():
 def _append_native_event_row(*, step_kind: str = '', agent_name: str = '', label: str = '', attempt: str = '',
                              event_type: str = '', model: str = '', done_reason: str = '', text: str = '',
                              thinking: str = '', payload=None, note: str = ''):
+    """Append one native-Ollama execution event to the diagnostic CSV."""
     csv_path = _ensure_native_events_log_file()
     if not csv_path:
         return
@@ -1552,6 +1810,7 @@ def _append_native_event_row(*, step_kind: str = '', agent_name: str = '', label
 
 
 def _web_logging_enabled() -> bool:
+    """Return whether true-open web-search events should be logged."""
     try:
         return bool(TRUE_OPEN_WORLD_ENABLED and WEB_BACKEND in {"duckduckgo", "brave"} and TOOL_MODE in {"web_only", "multi"})
     except Exception:
@@ -1559,6 +1818,7 @@ def _web_logging_enabled() -> bool:
 
 
 def _ensure_web_events_log_file():
+    """Create the true-open web-event CSV and header when needed."""
     global WEB_EVENTS_LOG_CSV_PATH
     if not _web_logging_enabled():
         return None
@@ -1586,6 +1846,7 @@ def _ensure_web_events_log_file():
 def _append_web_event_row(*, agent_name: str = '', step_kind: str = 'step3', previous_interaction_type: str = '',
                           current_belief=None, query: str = '', raw_results=None, kept_results=None, meta: dict | None = None,
                           tweet_text: str = ''):
+    """Append one true-open search or retrieval event to the diagnostic CSV."""
     csv_path = _ensure_web_events_log_file()
     if not csv_path:
         return
@@ -1625,6 +1886,12 @@ def _append_web_event_row(*, agent_name: str = '', step_kind: str = 'step3', pre
 
 
 def _write_run_metrics_csv(metrics_path: str):
+    """
+    Write aggregate run counters and transition metrics after simulation completion.
+    
+        This compact file records total moves, transition counts, repair/artifact counters, RAG events,
+        early stop state, and other run-level diagnostics used to compare experimental conditions.
+    """
     if not metrics_path:
         return
     try:
@@ -1665,14 +1932,12 @@ from langchain_core.messages import HumanMessage
 USE_FAKE_LLM = False
 
 def build_chat_ollama(model: str, temperature: float, **opts):
-    """Instantiate ChatOllama, passing only kwargs supported by the installed langchain_ollama version.
-
-    This keeps the script forward/backward compatible across langchain_ollama releases.
-
-    NOTE:
-      Some versions expose decoding params as explicit kwargs (top_p, top_k, repeat_penalty, etc.).
-      Other versions prefer an 'options' dict. We support BOTH and will forward any *unknown*
-      decoding params via 'options' when possible.
+    """
+    Create a ChatOllama client while tolerating langchain_ollama API differences.
+    
+        The installed wrapper version may accept decoding parameters directly or through an `options`
+        dictionary. This helper inspects the constructor and routes model options accordingly, so the
+        rest of the simulator can request temperature/top_p/top_k/etc. in one uniform way.
     """
     try:
         import inspect
@@ -1719,12 +1984,12 @@ def build_chat_ollama(model: str, temperature: float, **opts):
 
 
 def safe_format(template: str, **kwargs) -> str:
-    """Safely format prompt templates that may contain literal braces.
-
-    Many prompt files include literal curly braces for notation like {-2, -1, 0, 1, 2}.
-    Python's str.format() treats {...} as placeholders and will raise KeyError.
-    This helper only formats placeholders you pass in (e.g., {AGENT_NAME}, {TWEET})
-    and escapes all other braces.
+    """
+    Format prompt templates without breaking literal braces used in rating notation.
+    
+        Prompt files often contain text such as {-2, -1, 0, 1, 2}. Plain str.format would treat those
+        braces as placeholders. This helper temporarily protects the intended placeholders, escapes all
+        other braces, and then formats the prompt safely.
     """
     if template is None:
         return ""
@@ -1750,6 +2015,7 @@ def safe_format(template: str, **kwargs) -> str:
 
 
 def _clean_optional_prompt_text(value: str) -> str:
+    """Normalize optional prompt text and treat off/none/null values as empty."""
     s = str(value or "").strip()
     if s.lower() in {"off", "none", "null", "false"}:
         return ""
@@ -1757,6 +2023,7 @@ def _clean_optional_prompt_text(value: str) -> str:
 
 
 def _qwen_prompt_control_prefix(model_name: str, think_flag) -> str:
+    """Return the /think or /no_think control prefix required by qwen-family models."""
     model = str(model_name or "").strip().lower()
     if "qwen3" not in model:
         return ""
@@ -1768,6 +2035,7 @@ def _qwen_prompt_control_prefix(model_name: str, think_flag) -> str:
 
 
 def _prepend_model_prompt_control(prompt_text: str, model_name: str, think_flag):
+    """Add qwen prompt-control tokens to a prompt without duplicating existing controls."""
     s = str(prompt_text or "")
     prefix = _qwen_prompt_control_prefix(model_name, think_flag)
     if not prefix:
@@ -1778,12 +2046,12 @@ def _prepend_model_prompt_control(prompt_text: str, model_name: str, think_flag)
     return prefix + s
 
 def _prompt_control_think_override(prompt_text: str, model_name: str = ""):
-    """Return an API-level Ollama think override implied by the prompt prefix.
-
-    Qwen accepts textual /think and /no_think controls, but in Ollama they are
-    most reliable when mirrored into the JSON payload as top-level `think`.
-    This helper is deliberately narrow: it only fires for Qwen-family models and
-    only when the prompt begins with an explicit control token.
+    """
+    Read `/think` or `/no_think` from the prompt and convert it to an Ollama option.
+    
+        Qwen models may obey textual control tokens, but the native Ollama API is more reliable when
+        the same instruction is mirrored in the JSON payload as top-level `think=True/False`. This
+        function extracts that explicit override.
     """
     if model_name and not _is_qwen_family_model(model_name):
         return None
@@ -1796,6 +2064,7 @@ def _prompt_control_think_override(prompt_text: str, model_name: str = ""):
 
 
 def _apply_prompt_control_think_override(prompt_text: str, model_name: str, current_think):
+    """Resolve prompt-level /think or /no_think instructions into the native think option."""
     override = _prompt_control_think_override(prompt_text, model_name)
     return current_think if override is None else override
 
@@ -1841,6 +2110,7 @@ def _set_wrapper_prompt_control_think_override(conversation, prompt_text: str):
             pass
 
         def _restore():
+            """Restore the wrapper LLM think-setting after a temporary prompt-control override."""
             try:
                 if old_options is not None:
                     setattr(llm, 'options', old_options)
@@ -1857,16 +2127,18 @@ def _set_wrapper_prompt_control_think_override(conversation, prompt_text: str):
 
 
 def _is_qwen_family_model(model_name: str) -> bool:
+    """Return whether a model name belongs to the qwen model family."""
     model = str(model_name or "").strip().lower()
     return "qwen" in model
 
 
 def _compact_qwen_prompt_text(prompt_text: str, step: str = "") -> str:
-    """Conservative Qwen prompt compaction.
-
-    Preserve semantic blocks (world rules, shown material, fact-pack/rag guidance, task rules)
-    and only remove exact duplicated blocks plus excess blank lines. This keeps runtime
-    recovery focused on emission issues rather than silently changing prompt meaning.
+    """
+    Remove duplicate prompt scaffolding before sending long prompts to qwen models.
+    
+        The function is conservative: it collapses repeated blocks and blank lines but preserves world
+        rules, persona information, fact packs, RAG context, and required output format. The goal is to
+        reduce length-related failures without changing experimental semantics.
     """
     s = str(prompt_text or "")
     if not s:
@@ -1902,6 +2174,13 @@ def _compact_qwen_prompt_text(prompt_text: str, step: str = "") -> str:
     return compacted or s
 
 def _boost_qwen_num_predict_on_length(options: dict, step: str = "") -> dict:
+    """
+    Increase qwen generation budget after a native response ends because of length.
+    
+        Length-truncated qwen outputs often contain thinking but not the final protocol lines. This
+        helper raises num_predict within step/world-specific bounds for a retry, avoiding both repeated
+        truncation and unnecessarily large generations.
+    """
     opts = dict(options or {})
     current = opts.get("num_predict")
     try:
@@ -1979,20 +2258,24 @@ def _heuristic_freeform_protocol_body(raw_text: str, field: str = "tweet") -> st
 # ============================
 
 def _rag_enabled_for_world(world: str) -> bool:
+    """Return whether the selected world mode permits retrieval-augmented context."""
     w = _normalize_world_mode(world)
     return w in {"open_rag", "closed_strict_rag"}
 
 def _normalize_rag_text(s: str) -> str:
+    """Normalize text for simple lexical RAG scoring."""
     s = str(s or "").lower()
     s = re.sub(r"[^a-z0-9\s]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 def _rag_tokens(s: str) -> set[str]:
+    """Tokenize normalized text for overlap-based retrieval."""
     toks = [t for t in _normalize_rag_text(s).split() if len(t) >= 3]
     return set(toks)
 
 def _extract_claim_from_prompt_text(prompt_text: str) -> str:
+    """Extract the CLAIM field from a prompt when no explicit claim argument is available."""
     s = str(prompt_text or "")
     if not s:
         return ""
@@ -2005,6 +2288,7 @@ def _extract_claim_from_prompt_text(prompt_text: str) -> str:
     return claim
 
 def _resolve_version_metadata_path(raw_path: str) -> Path:
+    """Resolve the version-metadata file path across absolute, project, and working-directory locations."""
     raw = str(raw_path or "").strip()
     if not raw:
         return ROOT / "prompts" / "opinion_dynamics" / "Flache_2017" / "content" / "version_metadata" / "version_metadata.json"
@@ -2019,6 +2303,7 @@ def _resolve_version_metadata_path(raw_path: str) -> Path:
 
 
 def _load_version_metadata(raw_path: str) -> dict:
+    """Load topic/version metadata used for claim text and RAG topic filtering."""
     p = _resolve_version_metadata_path(raw_path)
     try:
         import json as _json
@@ -2031,6 +2316,7 @@ def _load_version_metadata(raw_path: str) -> dict:
 
 
 def _version_metadata_entry(version_set: str) -> dict:
+    """Return the metadata entry for the active version root."""
     version_root = _version_prefix(version_set)
     try:
         entry = VERSION_METADATA.get(version_root, {})
@@ -2040,17 +2326,20 @@ def _version_metadata_entry(version_set: str) -> dict:
 
 
 def _version_metadata_topic_key(version_set: str) -> str:
+    """Return the corpus topic key associated with a version set."""
     entry = _version_metadata_entry(version_set)
     val = str(entry.get("topic_key", "") or "").strip()
     return val or _version_prefix(version_set)
 
 
 def _version_metadata_theory_statement(version_set: str) -> str:
+    """Return the claim statement associated with a version set."""
     entry = _version_metadata_entry(version_set)
     return str(entry.get("theory_statement", "") or "").strip()
 
 
 def _current_claim_text(prompt_text: str = "") -> str:
+    """Resolve the active claim from globals, metadata, or prompt text."""
     claim = str(THEORY_STATEMENT or "").strip()
     if claim:
         return claim
@@ -2060,12 +2349,20 @@ def _current_claim_text(prompt_text: str = "") -> str:
     return _extract_claim_from_prompt_text(prompt_text)
 
 def _load_simple_rag_corpus(path: str) -> list[dict]:
+    """
+    Load the local retrieval corpus from text, JSON, JSONL, or CSV sources.
+    
+        The loader normalizes heterogeneous corpus formats into dictionaries with text plus metadata
+        such as topic and direction. Keeping this normalization here lets retrieval code treat all corpus
+        sources uniformly.
+    """
     p = Path(str(path or "").strip())
     if not p.exists():
         return []
     rows: list[dict] = []
     suffix = p.suffix.lower()
     def _append_text(chunk_text: str, idx: int):
+        """Append one corpus chunk while preserving available metadata fields."""
         txt = str(chunk_text or "").strip()
         if txt:
             rows.append({"id": f"{p.stem}_{idx}", "text": txt})
@@ -2131,6 +2428,13 @@ def _load_simple_rag_corpus(path: str) -> list[dict]:
     return rows
 
 def _build_rag_query(claim_txt: str, tweet_txt: str, mode: str) -> str:
+    """
+    Build the local-RAG query from the claim, the current tweet, or both.
+    
+        Step-2 and Step-3 can retrieve against different context. Claim-only retrieval keeps evidence
+        topic-centered, tweet-only retrieval reacts to the current message, and claim-plus-tweet combines
+        both signals.
+    """
     mode = str(mode or "claim").strip().lower()
     claim_txt = str(claim_txt or "").strip()
     tweet_txt = str(tweet_txt or "").strip()
@@ -2141,10 +2445,12 @@ def _build_rag_query(claim_txt: str, tweet_txt: str, mode: str) -> str:
     return claim_txt or tweet_txt
 
 def _rag_topic_key_from_version_set(version_set: str) -> str:
+    """Return the RAG topic key implied by a version_set value."""
     return _version_metadata_topic_key(version_set)
 
 
 def _active_rag_topic_key() -> str:
+    """Return the currently active RAG topic key, including manual overrides."""
     override = str(getattr(args, "rag_topic_override", "") or "").strip()
     if override:
         return override
@@ -2152,6 +2458,13 @@ def _active_rag_topic_key() -> str:
 
 
 def _row_matches_rag_topic(row: dict, topic_key: str) -> bool:
+    """
+    Return whether a corpus row belongs to the active topic filter.
+    
+        Topic filtering prevents snippets from other claims from leaking into a run. Rows without topic
+        metadata are allowed as a recall-oriented fallback, so mixed corpora should preferably include
+        explicit topic keys.
+    """
     target = str(topic_key or "").strip().lower()
     if not target:
         return True
@@ -2171,6 +2484,7 @@ def _row_matches_rag_topic(row: dict, topic_key: str) -> bool:
 
 
 def _filter_rag_corpus_by_topic(corpus: list[dict], topic_key: str) -> list[dict]:
+    """Filter the RAG corpus to chunks relevant to the active topic."""
     if not corpus:
         return []
     filtered = [row for row in corpus if _row_matches_rag_topic(row, topic_key)]
@@ -2178,6 +2492,7 @@ def _filter_rag_corpus_by_topic(corpus: list[dict], topic_key: str) -> list[dict
 
 
 def _rag_row_direction(row: dict) -> str:
+    """Classify one RAG row as supportive, criticism, context, or unknown."""
     vals = []
     for key in ["direction", "polarity", "label", "type", "category", "tags"]:
         v = row.get(key)
@@ -2196,6 +2511,13 @@ def _rag_row_direction(row: dict) -> str:
 
 
 def _rag_query_mode_for_step(step_kind: str, tweet_txt: str = "") -> str:
+    """
+    Resolve the effective query mode separately for Step-2 and Step-3.
+    
+        Step-specific overrides take precedence over the global RAG query mode. In auto mode, Step-2 can
+        use claim-plus-tweet when tweet text exists, while Step-3 defaults toward the received tweet so
+        retrieval is aligned with the listener's immediate evidence.
+    """
     step_kind = str(step_kind or "step3").strip().lower()
     if step_kind == "step2":
         mode = str(getattr(args, "rag_query_mode_step2", "") or "").strip().lower()
@@ -2210,12 +2532,20 @@ def _rag_query_mode_for_step(step_kind: str, tweet_txt: str = "") -> str:
 
 
 def _rag_stable_seed(*parts) -> int:
+    """Build a deterministic seed for reproducible stochastic RAG chunk selection."""
     blob = "||".join(str(p or "") for p in parts)
     digest = hashlib.sha256(blob.encode("utf-8", errors="replace")).hexdigest()
     return int(digest[:16], 16)
 
 
 def _rag_seeded_pick_rows(scored_rows: list[dict], quota: int, *, query: str = "", content_mode: str = "", group_key: str = "", topic_key: str = "", step_kind: str = "") -> list[dict]:
+    """
+    Select retrieved chunks reproducibly while preserving limited variety.
+    
+        After lexical scoring, the function samples from a high-scoring candidate pool using a stable
+        seed derived from run/topic/query information. This avoids always showing the same row while
+        keeping matched-seed comparisons reproducible.
+    """
     quota = max(0, int(quota))
     if quota <= 0 or not scored_rows:
         return []
@@ -2272,6 +2602,7 @@ def _rag_seeded_pick_rows(scored_rows: list[dict], quota: int, *, query: str = "
 
 
 def _rag_score_rows(query: str, corpus: list[dict]) -> list[dict]:
+    """Score corpus rows by lexical token overlap with the retrieval query."""
     q = _rag_tokens(query)
     if not q:
         return []
@@ -2296,6 +2627,13 @@ def _rag_score_rows(query: str, corpus: list[dict]) -> list[dict]:
 
 
 def _retrieve_simple_chunks(query: str, corpus: list[dict], top_k: int = 4, content_mode: str = "full", *, agent_name: str = "", step_kind: str = "", topic_key: str = "") -> list[dict]:
+    """
+    Retrieve local-corpus chunks for the active RAG content mode.
+    
+        Supportive, criticism, context, full, and balanced modes are implemented here. Balanced mode
+        explicitly tries to draw from both supportive and critical rows and records shortfalls so the
+        evidence environment can be audited later.
+    """
     scored = _rag_score_rows(query, corpus)
     if not scored:
         return []
@@ -2405,6 +2743,7 @@ def _retrieve_simple_chunks(query: str, corpus: list[dict], top_k: int = 4, cont
 
 
 def _rag_header_for_direction(direction: str) -> str:
+    """Return the prompt header used for a group of retrieved snippets."""
     d = str(direction or "").strip().lower()
     if d == "criticism":
         return "Retrieved snippets (claim-challenging):"
@@ -2418,6 +2757,7 @@ def _rag_header_for_direction(direction: str) -> str:
 
 
 def _effective_rag_top_k(world: str, configured_top_k: int, content_mode: str = "full") -> int:
+    """Normalize and cap top-k retrieval counts for balanced and strict closed-world modes."""
     try:
         top_k = int(configured_top_k)
     except Exception:
@@ -2480,6 +2820,12 @@ def _rag_truncate_rendered_context(text: str, max_chars: int) -> str:
     return cut[:max_chars].rsplit(" ", 1)[0].rstrip(" ,;:-—") + "…"
 
 def _render_rag_context(rows: list[dict], max_chars: int, content_mode: str = "full") -> str:
+    """
+    Render selected RAG rows into the prompt block shown to the LLM.
+    
+        Rows are grouped by direction and printed under stable headers. The rendered block is truncated
+        safely so snippets remain readable and do not create misleading broken sentences when shortened.
+    """
     cleaned_rows = [r for r in (rows or []) if str(r.get("text", "")).strip()]
     if not cleaned_rows:
         return ""
@@ -2537,6 +2883,13 @@ def _render_rag_context(rows: list[dict], max_chars: int, content_mode: str = "f
     return _rag_truncate_rendered_context(s, max_chars)
 
 def _maybe_init_rag_corpus() -> list[dict]:
+    """
+    Load the RAG corpus lazily only for worlds/backends that actually use retrieval.
+    
+        Non-RAG runs should not pay corpus-loading cost or accidentally access retrieval material. This
+        helper is called at startup and leaves the global corpus empty unless the selected configuration
+        requires local RAG.
+    """
     if not _rag_enabled_for_world(getattr(args, "world", "closed")):
         return []
     if str(getattr(args, "rag_backend", "off")).strip().lower() == "off":
@@ -2547,6 +2900,13 @@ def _maybe_init_rag_corpus() -> list[dict]:
     return _load_simple_rag_corpus(path)
 
 def _rag_context_for_interaction(tweet_text: str = "", step_kind: str = "step3", agent_name: str = "", prompt_variant: str = "", prompt_text: str = "") -> str:
+    """
+    Build and log the retrieved context for one Step-2 or Step-3 interaction.
+    
+        The function resolves topic filtering, query text, top-k, content mode, selection, logging, and
+        rendering in one place. Both prompt-building paths call this wrapper instead of manipulating the
+        corpus directly.
+    """
     if not _rag_enabled_for_world(getattr(args, "world", "closed")):
         return ""
     if str(getattr(args, "rag_backend", "off")).strip().lower() != "simple":
@@ -3223,7 +3583,7 @@ parser.add_argument(
 parser.add_argument("-test", "--test_run", action="store_true", help="Set flag if test run")
 parser.add_argument("--no_rating", action="store_true", help="Set flag if prompt is no rating")
 parser.add_argument(
-    "-out", "--output_file", type=str, default="test1.csv", help="Name of the output file"
+    "-out", "--out", "--output_file", type=str, default="test1.csv", help="Name of the output file"
 )
 args = parser.parse_args()
 DEFAULT_MAX_STEP_CHANGE = args.max_step_change
@@ -3271,6 +3631,12 @@ Memory use rule:
 """.strip()
 
 def _memory_use_rules_for_step(step_kind: str) -> str:
+    """
+    Return memory-use instructions only when memory is visible to the model.
+    
+        The simulator can store memory for logs while still running Markovian LLM calls. This helper
+        prevents memory instructions from appearing when `llm_history` is disabled.
+    """
     try:
         if not bool(MEMORY_ENABLED and LLM_HISTORY_ENABLED):
             return ""
@@ -3506,6 +3872,7 @@ EXTERNAL_WORLD_RULES["closed_strict_rag"] = CLOSED_WORLD_RULES_STRICT_RAG
 WORLD_LABELS["closed_strict_rag"] = "CLOSED_STRICT_RAG"
 
 def _step3_open_world_rules(world: str, toggle: str) -> str:
+    """Return extra Step-3 instructions for open-world modes."""
     if str(toggle or "on").strip().lower() != "on":
         return ""
     w = str(world or "").strip().lower()
@@ -3515,6 +3882,7 @@ def _step3_open_world_rules(world: str, toggle: str) -> str:
 
 
 def _normalize_fact_pack_mode(mode: str) -> str:
+    """Normalize fact-pack mode aliases such as on -> full."""
     m = str(mode or "off").strip().lower()
     if m == "on":
         m = "full"
@@ -3522,19 +3890,28 @@ def _normalize_fact_pack_mode(mode: str) -> str:
 
 
 def _is_criticism_only_fact_pack_mode(mode: str) -> bool:
+    """Return whether the active fact-pack mode contains only criticisms."""
     return _normalize_fact_pack_mode(mode) == "criticisms"
 
 
 def _is_closed_world_mode(world: str) -> bool:
+    """Return whether the world mode forbids unseen external knowledge."""
     return _normalize_world_mode(world) in {"closed", "closed_strict", "closed_strict_rag"}
 
 
 def _join_prompt_rule_blocks(*blocks: str) -> str:
+    """Join optional prompt rule blocks while skipping empty values."""
     parts = [str(b or "").strip() for b in blocks if str(b or "").strip()]
     return "\n\n".join(parts)
 
 
 def _step2_fact_pack_rules(fact_pack_text: str, mode: str, world: str) -> str:
+    """
+    Build the Step-2 rule block that tells speakers how to use shown fact-pack material.
+    
+        The rules differ for closed-world, strict-closed, RAG, and criticism-only settings. Centralizing
+        them here keeps speaker prompts consistent with the active evidence environment.
+    """
     # For closed_strict_rag, the strict/no-outside-access rule is already supplied by
     # CLOSED_WORLD_RULES_STRICT_RAG, and RAG is extra shown material. Do not append the
     # no-extra-material closed-case block on RAG prompts.
@@ -3555,6 +3932,13 @@ def _step2_fact_pack_rules(fact_pack_text: str, mode: str, world: str) -> str:
 
 
 def _step3_fact_pack_rules(fact_pack_text: str, mode: str, world: str) -> str:
+    """
+    Build the Step-3 rule block that tells listeners how to evaluate shown fact-pack material.
+    
+        Listener prompts need stronger safeguards than speaker prompts because final ratings are updated
+        here. The generated block clarifies whether shown material is allowed and whether outside evidence
+        is forbidden.
+    """
     rag_active = _rag_enabled_for_world(world)
     # For closed_strict_rag, RAG snippets are extra shown material, so avoid appending
     # closed-world/no-extra-material case rules. CLOSED_WORLD_RULES_STRICT_RAG plus
@@ -3574,6 +3958,7 @@ def _step3_fact_pack_rules(fact_pack_text: str, mode: str, world: str) -> str:
     return _join_prompt_rule_blocks(*parts)
 
 def _normalize_world_mode(world: str) -> str:
+    """Normalize world-mode aliases and fall back to closed mode when invalid."""
     w = str(world or "closed").strip().lower()
     if w == "open":
         w = "open_no_rag"
@@ -3583,12 +3968,20 @@ def _normalize_world_mode(world: str) -> str:
 
 
 def _is_open_world_mode(world: str) -> bool:
+    """Return whether a world mode allows model background knowledge or live search."""
     return _normalize_world_mode(world) in {"open_no_rag", "open_rag", "true_open"}
 
 
 
 
 def _qwen_world_num_predict_floor(step: str, world: str, think_flag) -> int:
+    """
+    Choose a minimum qwen generation budget for the current step and world mode.
+    
+        RAG and open-world prompts are longer than closed prompts, and Step-2/Step-3 have different output
+        lengths. This helper prevents the native path from using generation budgets that are too small for
+        protocol completion.
+    """
     w = _normalize_world_mode(world)
     step = str(step or "step2").strip().lower()
     base = {
@@ -3619,6 +4012,13 @@ def _qwen_world_num_predict_floor(step: str, world: str, think_flag) -> int:
 
 
 def _build_world_aware_step2_compact_retry_prompt(agent_name: str, claim_txt: str, current_belief: int) -> str:
+    """
+    Build a compact Step-2 retry prompt after a tweet-generation failure.
+    
+        The retry keeps only the essential claim, present view, world constraints, and output format. It is
+        used when the original prompt produced malformed or off-protocol text and a shorter instruction is
+        more likely to succeed.
+    """
     belief_i = int(current_belief)
     claim_clean = str(claim_txt or '').strip()
     common = (
@@ -3799,6 +4199,7 @@ def _restore_step2_prompt_block_boundaries(prompt_text: str) -> str:
     s = _fix_quoted_protocol_label_breaks(s)
     return s.strip()
 def _extract_step2_shown_tweet_from_prompt(prompt_text: str) -> str:
+    """Extract shown tweet text from a Step-2 prompt for rescue prompting."""
     s = str(prompt_text or "")
     if not s:
         return ""
@@ -3809,6 +4210,7 @@ def _extract_step2_shown_tweet_from_prompt(prompt_text: str) -> str:
 
 
 def _build_strict_closed_step2_native_rescue_prompt(agent_name: str, claim_txt: str, current_belief: int, shown_tweet: str = "", shown_material: str = "") -> str:
+    """Build a native Step-2 rescue prompt that forbids unsupported outside knowledge."""
     belief_i = int(current_belief)
     claim_clean = str(claim_txt or '').strip()
     shown = re.sub(r"\s+", " ", str(shown_tweet or "")).strip()
@@ -3848,6 +4250,7 @@ def _build_strict_closed_step2_native_rescue_prompt(agent_name: str, claim_txt: 
 
 
 def _build_strict_closed_step2_ultra_compact_rescue_prompt(agent_name: str, claim_txt: str, current_belief: int, shown_tweet: str = "", shown_material: str = "") -> str:
+    """Build the smallest strict-closed Step-2 rescue prompt for stubborn protocol failures."""
     belief_i = int(current_belief)
     claim_clean = str(claim_txt or '').strip()
     shown = re.sub(r"\s+", " ", str(shown_tweet or "")).strip()
@@ -3886,6 +4289,7 @@ def _build_strict_closed_step2_ultra_compact_rescue_prompt(agent_name: str, clai
 
 
 def _rescue_grounding_item_is_useful(line: str) -> bool:
+    """Filter prompt lines so rescue prompts keep only real grounding material."""
     low = re.sub(r"\s+", " ", str(line or "")).strip().lower()
     if not low:
         return False
@@ -3905,6 +4309,13 @@ def _rescue_grounding_item_is_useful(line: str) -> bool:
 
 
 def _extract_external_grounding_text(prompt_text: str) -> str:
+    """
+    Extract shown grounding material from prompt sections used by validators and rescues.
+    
+        The function looks for fact-pack, RAG, web-search, and other explicit material blocks while
+        ignoring task instructions. Its output is the basis for deciding whether source/evidence language
+        is grounded in the current prompt.
+    """
     s = str(prompt_text or "")
     if not s:
         return ""
@@ -3991,6 +4402,7 @@ def _extract_external_grounding_text(prompt_text: str) -> str:
 
 
 def _compact_rescue_grounding_text(text: str, max_chars: int = 700) -> str:
+    """Shorten grounding material for compact rescue prompts without changing its role."""
     raw_lines = [
         re.sub(r"\s+", " ", ln).strip()
         for ln in str(text or "").splitlines()
@@ -4022,6 +4434,13 @@ def _compact_rescue_grounding_text(text: str, max_chars: int = 700) -> str:
     return s + " ..."
 
 def _persona_trust_allows_external_family(prompt_text: str, family: str) -> bool:
+    """
+    Return whether persona trust traits permit source-oriented explanation language.
+    
+        Authority-leaning agents and distrust-oriented agents can legitimately use different source
+        frames. This check gives validators a controlled way to allow that variation without opening the
+        door to unsupported outside-knowledge claims.
+    """
     s = str(prompt_text or "").lower()
     if not s:
         return False
@@ -4029,33 +4448,8 @@ def _persona_trust_allows_external_family(prompt_text: str, family: str) -> bool
     if not trustish:
         return False
     return family in {"verification", "records", "documents", "official_confirmation", "experts", "institutions"}
-def _build_world_aware_step3_empty_retry_prompt(agent_name: str, claim_txt: str, pre_belief: int, allowed_str: str, tweet_txt: str) -> str:
-    if _is_open_world_mode(WORLD):
-        return (
-            "/no_think\n"
-            f"Now, {agent_name or 'you'}, rate this tweet using the tweet and any shown material.\n\n"
-            f"CLAIM: {claim_txt}\n"
-            f"PRESENT VIEW: {int(pre_belief)}\n"
-            f"ALLOWED_FINAL_RATING_SET: {allowed_str}\n\n"
-            f"TWEET:\n{tweet_txt}\n\n"
-            "Output exactly 2 lines and nothing else.\n"
-            f"FINAL_RATING: <one of {allowed_str}>\n"
-            "EXPLANATION: <one short anchor sentence tied to one concrete point>"
-        )
-    return (
-        "/no_think\n"
-        f"Now, {agent_name or 'you'}, rate this tweet using only shown material.\n\n"
-        f"CLAIM: {claim_txt}\n"
-        f"PRESENT VIEW: {int(pre_belief)}\n"
-        f"ALLOWED_FINAL_RATING_SET: {allowed_str}\n\n"
-        f"TWEET:\n{tweet_txt}\n\n"
-        "Output exactly 2 lines and nothing else.\n"
-        f"FINAL_RATING: <one of {allowed_str}>\n"
-        "EXPLANATION: <one short anchor sentence tied to one concrete point>"
-    )
-
-
 def _true_open_stopwords() -> set[str]:
+    """Return stopwords used by true-open query and result scoring."""
     return {
         "the","a","an","and","or","but","if","then","that","this","those","these","there","here",
         "have","has","had","not","never","on","in","to","of","for","with","from","by","as",
@@ -4066,6 +4460,7 @@ def _true_open_stopwords() -> set[str]:
 
 
 def _true_open_tokens(s: str) -> list[str]:
+    """Tokenize true-open query/result text for scoring."""
     toks = [t.lower() for t in re.findall(r"[A-Za-z0-9'_-]+", str(s or ""))]
     return toks
 
@@ -4119,6 +4514,7 @@ _TRUE_OPEN_MOON_VERIFICATION_PATTERNS = [
 
 
 def _true_open_hinge_tokens(tweet_txt: str, claim_txt: str = "") -> set[str]:
+    """Extract focused tokens from the claim and tweet for live-search queries."""
     tweet_toks = _true_open_tokens(tweet_txt)
     claim_toks = set(_true_open_tokens(claim_txt))
     generic = _true_open_stopwords() | _TRUE_OPEN_GENERIC_TOPIC_TOKENS | claim_toks
@@ -4126,6 +4522,7 @@ def _true_open_hinge_tokens(tweet_txt: str, claim_txt: str = "") -> set[str]:
 
 
 def _true_open_focus_flags(tweet_txt: str) -> dict:
+    """Detect which evidence families the true-open search should emphasize."""
     low = str(tweet_txt or '').lower()
     return {
         "evidence_focus": bool(re.search(r"\b(evidence|proof|proven|undeniable|irrefutable|photo|photos|video|videos|footage|sample|samples|rock|rocks|record|records|archive|archives|verify|verification|verifiable|authentic|authenticity|hoax|fake|flag|radiation|belt|belts|retroreflector|unverifiable|circumstantial)\b", low)),
@@ -4139,6 +4536,7 @@ def _true_open_focus_flags(tweet_txt: str) -> dict:
     }
 
 def _true_open_url_path_penalty(url: str) -> int:
+    """Penalize low-value URL paths in true-open result scoring."""
     try:
         parsed = urllib.parse.urlparse(str(url or ""))
         path = f"{parsed.netloc} {parsed.path}".lower()
@@ -4156,6 +4554,7 @@ def _true_open_url_path_penalty(url: str) -> int:
     return penalty
 
 def _true_open_source_specificity_bonus(blob_low: str, focus_flags: dict) -> int:
+    """Reward search results that mention concrete sources, titles, or claim-specific details."""
     bonus = 0
     if (focus_flags.get("evidence_focus") or focus_flags.get("artifact_focus") or focus_flags.get("footage_focus")) and re.search(r"\b(photo|photos|video|videos|footage|sample|samples|rock|rocks|record|records|archive|archives|retroreflector|flag|radiation|belt|belts|footprints?|descent stage|landing site|orbiter images?)\b", blob_low):
         bonus += 5
@@ -4168,6 +4567,7 @@ def _true_open_source_specificity_bonus(blob_low: str, focus_flags: dict) -> int
     return bonus
 
 def _true_open_domain_quality(url: str) -> int:
+    """Score a result domain for source quality in true-open mode."""
     try:
         host = (urllib.parse.urlparse(str(url or "")).netloc or "").lower()
     except Exception:
@@ -4192,12 +4592,14 @@ def _true_open_domain_quality(url: str) -> int:
 
 
 def _true_open_topic_profile(claim_txt: str, tweet_txt: str = "") -> str:
+    """Return topic-specific scoring hints for true-open retrieval."""
     blob = f"{claim_txt or ''} {tweet_txt or ''}".lower()
     if re.search(r"\b(apollo|moon landing|moon landings|lunar|astronauts? .*moon|moon .*astronauts?)\b", blob):
         return "moon_landing"
     return "generic"
 
 def _score_true_open_result_general(row: dict, claim_txt: str, tweet_txt: str) -> tuple[int, dict]:
+    """Compute the general quality/relevance score for one live-search result."""
     title = re.sub(r"\s+", " ", str((row or {}).get("title", "") or "")).strip()
     snippet = re.sub(r"\s+", " ", str((row or {}).get("snippet", "") or "")).strip()
     url = str((row or {}).get("url", "") or "").strip()
@@ -4236,6 +4638,7 @@ def _score_true_open_result_general(row: dict, claim_txt: str, tweet_txt: str) -
 
 
 def _score_true_open_result_topic_layer(clean: dict, claim_txt: str, tweet_txt: str) -> int:
+    """Add topic-specific relevance adjustments to a live-search result score."""
     topic_profile = str((clean or {}).get("topic_profile", "generic") or "generic")
     if topic_profile == "generic":
         return 0
@@ -4258,6 +4661,7 @@ def _score_true_open_result_topic_layer(clean: dict, claim_txt: str, tweet_txt: 
 
 
 def _score_true_open_result(row: dict, claim_txt: str, tweet_txt: str) -> tuple[int, dict]:
+    """Combine general and topic-specific scoring for one live-search result."""
     score, clean = _score_true_open_result_general(row, claim_txt, tweet_txt)
     if score <= -999 or not clean:
         return score, clean
@@ -4266,6 +4670,7 @@ def _score_true_open_result(row: dict, claim_txt: str, tweet_txt: str) -> tuple[
 
 
 def _rerank_true_open_results(results: list[dict], claim_txt: str, tweet_txt: str, show_k: int = 3, step_kind: str = "step3") -> list[dict]:
+    """Sort live-search results by the combined true-open relevance score."""
     scored = []
     seen = set()
     hinge_toks = _true_open_hinge_tokens(tweet_txt, claim_txt)
@@ -4337,6 +4742,7 @@ def _rerank_true_open_results(results: list[dict], claim_txt: str, tweet_txt: st
     return [row for _, row in kept[:max_keep]]
 
 def _render_live_web_context(results: list[dict], max_chars: int = 1400, *, no_strong_results: bool = False) -> str:
+    """Render selected live-search results into prompt context for true-open runs."""
     rows = []
     total = 0
     if no_strong_results:
@@ -4358,20 +4764,29 @@ def _render_live_web_context(results: list[dict], max_chars: int = 1400, *, no_s
     return "LIVE WEB SEARCH RESULTS (shown material)\n" + "\n".join(rows)
 
 def _world_vars(world: str):
+    """Return world-mode prompt variables used by safe_format."""
     w = _normalize_world_mode(world)
     return WORLD_LABELS.get(w, "CLOSED"), EXTERNAL_WORLD_RULES.get(w, EXTERNAL_WORLD_RULES["closed"])
 
 
 def _version_prefix(version_set: str) -> str:
+    """Extract the root version identifier from a version_set string."""
     return str(version_set or "").strip().split("_")[0]
 
 
 def _join_bullets(lines):
+    """Render a list of strings as prompt bullet points."""
     items = [str(x).strip() for x in (lines or []) if str(x).strip()]
     return "\n".join(f"- {x}" for x in items)
 
 
 def build_fact_pack_text(version_set: str, mode: str) -> str:
+    """
+    Build the topic fact-pack block injected into prompts for the selected mode.
+    
+        Fact packs are curated evidence sets separate from local RAG. The mode selects supportive,
+        critical, contextual, balanced, full, or off content so experiments can isolate evidence direction.
+    """
     m = str(mode or "off").strip().lower()
     if m in {"", "off", "none"}:
         return ""
@@ -4392,6 +4807,7 @@ def build_fact_pack_text(version_set: str, mode: str) -> str:
     sections = []
 
     def add_section(header: str, lines):
+        """Append one fact-pack section if it has content for the selected mode."""
         block = _join_bullets(lines)
         if block:
             sections.append(f"{header}:\n{block}")
@@ -4422,6 +4838,7 @@ def build_fact_pack_text(version_set: str, mode: str) -> str:
 
 WORLD, WORLD_RULES = _world_vars(getattr(args, "world", "closed"))
 def _shown_material_direction(world: str, fact_pack_mode: str, rag_content_mode: str) -> str:
+    """Classify shown material as supportive, critical, mixed, context, or unknown."""
     if _rag_enabled_for_world(world):
         mode = str(rag_content_mode or "full").strip().lower()
         if mode == "criticism_only":
@@ -4441,6 +4858,12 @@ def _shown_material_direction(world: str, fact_pack_mode: str, rag_content_mode:
 
 
 def _step2_mismatched_shown_material_rules(current_belief: int, world: str, fact_pack_mode: str, rag_content_mode: str) -> str:
+    """
+    Generate extra Step-2 safeguards when shown evidence conflicts with speaker stance.
+    
+        For example, a positive speaker seeing criticism-only material should not turn that criticism into
+        support without qualification. These rules reduce direction inversions in generated tweets.
+    """
     direction = _shown_material_direction(world, fact_pack_mode, rag_content_mode)
     try:
         b = int(current_belief)
@@ -4485,6 +4908,7 @@ RAG_CORPUS = _maybe_init_rag_corpus()
 
 
 def _bias_mode_from_text(bias_text: str) -> str:
+    """Infer none/weak/strong confirmation-bias mode from prompt text."""
     s = re.sub(r"\s+", " ", str(bias_text or "")).strip().lower()
     if not s:
         return "default"
@@ -4500,14 +4924,17 @@ def _bias_mode_from_text(bias_text: str) -> str:
 
 
 def _is_strong_confirmation_bias_active(bias_text: str | None = None) -> bool:
+    """Return whether strong confirmation bias is active for the current run."""
     return _bias_mode_from_text(BIAS_TEXT if bias_text is None else bias_text) == "strong"
 
 
 def _is_free_bounded_update_mode() -> bool:
+    """Return whether the active update mode allows movement in either direction."""
     return str(globals().get("ALLOWED_UPDATE_MODE", "assimilation_only") or "assimilation_only").strip().lower() == "free_bounded"
 
 
 def _step3_update_mode_note(allowed_str: str) -> str:
+    """Build the Step-3 prompt note explaining the allowed-rating set."""
     if not _is_free_bounded_update_mode():
         return ""
     return (
@@ -4521,6 +4948,7 @@ def _step3_update_mode_note(allowed_str: str) -> str:
 
 
 def _step3_free_bounded_decision_rule_block(allowed_str: str) -> str:
+    """Return Step-3 decision rules specific to free_bounded updates."""
     return (
         "Decision rule\n"
         "1. Read the current tweet and identify its strongest concrete point.\n"
@@ -4533,11 +4961,11 @@ def _step3_free_bounded_decision_rule_block(allowed_str: str) -> str:
 
 
 def _replace_step3_decision_rule_for_update_mode(prompt_text: str, allowed_str: str) -> str:
-    """Use a different Step-3 decision block when free_bounded is active.
-
-    The prompt files are written around assimilation-style updating. In free_bounded mode,
-    the allowed numeric set is the movement boundary, so the old same/opposite-direction
-    decision rule can conflict with the experiment. This replacement is runtime-only.
+    """
+    Replace legacy Step-3 movement rules with rules matching the active update mode.
+    
+        The same prompt templates can be reused for assimilation_only and free_bounded experiments. This
+        function ensures the final decision instructions match the allowed-rating set computed by the code.
     """
     s = str(prompt_text or "")
     if not _is_free_bounded_update_mode():
@@ -4554,6 +4982,7 @@ def _replace_step3_decision_rule_for_update_mode(prompt_text: str, allowed_str: 
 
 
 def _strong_bias_extra_note(pre_belief: int, tweet_stance: str | None) -> str:
+    """Return an additional Step-3 caution note under strong confirmation bias."""
     if not _is_strong_confirmation_bias_active():
         return ""
     try:
@@ -4616,6 +5045,7 @@ def _active_fact_pack_polarity_points(version_set: str, mode: str) -> dict:
         negative.extend(list(pack.get("criticisms", []) or []))
 
     def _uniq(seq):
+        """Deduplicate items while preserving their first-seen order."""
         out = []
         seen = set()
         for x in seq:
@@ -4639,6 +5069,7 @@ _FACT_MATCH_STOPWORDS = {
 
 
 def _fact_match_tokens(text: str) -> list[str]:
+    """Tokenize fact-pack text for evidence-matching heuristics."""
     raw = re.findall(r"[A-Za-z0-9]+", str(text or "").lower())
     out = []
     for tok in raw:
@@ -4654,6 +5085,7 @@ def _fact_match_tokens(text: str) -> list[str]:
 
 
 def _tweet_matches_fact_pack_polarity(tweet_text: str, polarity: str) -> bool:
+    """Check whether a tweet overlaps with supportive or critical fact-pack material."""
     pools = _ACTIVE_FACT_PACK_POLARITY_POINTS or {}
     points = list(pools.get(str(polarity or "").strip().lower(), []) or [])
     if not points:
@@ -4770,6 +5202,7 @@ def _tweet_matches_specific_fact_pack_polarity(tweet_text: str, polarity: str) -
 
 
 def _short_fact_point_label(point_text: str) -> str:
+    """Create a compact human-readable label for a matched fact-pack point."""
     toks = [t for t in _fact_match_tokens(point_text) if t not in _FACT_SPECIFICITY_GENERIC_TOKENS and not t.isdigit()]
     if not toks:
         toks = [t for t in _fact_match_tokens(point_text) if not t.isdigit()]
@@ -4778,6 +5211,7 @@ def _short_fact_point_label(point_text: str) -> str:
 
 
 def _best_matching_fact_pack_point_label(tweet_text: str) -> str:
+    """Return the best fact-pack point label matched by a tweet."""
     tweet_tokens = set(_fact_match_tokens(tweet_text))
     if not tweet_tokens:
         return "none"
@@ -4798,6 +5232,7 @@ def _best_matching_fact_pack_point_label(tweet_text: str) -> str:
 
 
 def _log_step2_cue_metric(tweet_text: str):
+    """Increment a Step-2 cue diagnostic metric."""
     label = _best_matching_fact_pack_point_label(tweet_text)
     _metric_inc(f"step2_cue::{label}")
 
@@ -4920,11 +5355,11 @@ def _same_rating_generic_fact_dismissal_tag(pre_value: int, final_value: int, tw
     return None
 
 def _fact_based_opposite_side_inversion_tag(pre_value: int, tweet_stance_local: str | None, tweet_text: str, explanation_text: str) -> str | None:
-    """Flag cases where a specific opposite-side fact is interpreted as strengthening the current side.
-
-    This is intentionally generic and fact-pack-driven:
-      - positive/supportive fact-pack point in a support tweet should not become "more skeptical"
-      - negative/skeptical fact-pack point in an oppose tweet should not become "more believing"
+    """
+    Detect when a tweet uses fact-pack material in the opposite direction from its polarity.
+    
+        The tag helps identify cases where a supportive fact is framed as criticism or vice versa. These
+        events are logged as Step-2 warnings because they can contaminate the intended evidence condition.
     """
     try:
         pre_i = int(pre_value)
@@ -5146,6 +5581,7 @@ def _ensure_persona_card_contains_row_fields(persona_text: str, row_meta, agent_
         lines.insert(0, "AGENT_PERSONA_CARD")
 
     def _get(col: str) -> str:
+        """Read one optional row/key value without failing on missing fields."""
         try:
             return _csv_clean_value(row_meta.get(col, ""))
         except Exception:
@@ -5154,6 +5590,7 @@ def _ensure_persona_card_contains_row_fields(persona_text: str, row_meta, agent_
     normalized = {ln.split(':', 1)[0].strip().lower(): idx for idx, ln in enumerate(lines) if ':' in ln}
 
     def _add(label: str, value: str):
+        """Append one formatted persona-card line when the value is present."""
         value = str(value or "").strip()
         if not value:
             return
@@ -5198,9 +5635,11 @@ def _ensure_persona_card_contains_row_fields(persona_text: str, row_meta, agent_
 
 def make_public_persona(persona_text: str) -> str:
     """
-    Remove fields that should not be shown during decision steps.
-    - Remove Initial rating (leaks state).
-    - Remove Belief (stale after updates; duplicates initial).
+    Build the persona text that is safe to show to the agent during decision steps.
+    
+        The public card removes stale or state-leaking fields such as initial rating and current belief,
+        while preserving stable causal/persona attributes. This prevents persona text from duplicating or
+        contradicting the numeric belief state maintained by the simulator.
     """
     if not persona_text:
         return persona_text
@@ -5233,24 +5672,26 @@ def make_public_persona(persona_text: str) -> str:
 # We use a real ConversationBufferMemory but optionally *hide* history from the LLM prompt
 # (Markovian mode) while still *storing* it for debugging/logging.
 class GatedConversationBufferMemory(ConversationBufferMemory):
-    """ConversationBufferMemory that can hide its stored history from the prompt.
-
-    When expose_history=False, load_memory_variables() returns an empty payload, so the LLM
-    conditions only on the current prompt (Markovian w.r.t. belief + current tweet).
-    The underlying chat_memory is still updated via save_context(), so you can print/debug
-    full history if you want.
+    """
+    Conversation memory wrapper that can store history while hiding it from the prompt.
+    
+        This is what makes memory-off/Markovian runs possible without removing logging infrastructure.
+        When the history gate is closed, the LLM receives only the current prompt even though memory events
+        may still be recorded for debugging or later analysis.
     """
 
     expose_history: bool = True  # pydantic field (works for both v1/v2)
     memory_step_kind: str = ""  # step2/step3; controls the temporary memory-use rule
 
     def _empty_payload(self):
+        """Return an empty memory payload when conversation history must be hidden."""
         keys = getattr(self, "memory_variables", None) or [getattr(self, "memory_key", "history")]
         if bool(getattr(self, "return_messages", False)):
             return {k: [] for k in keys}
         return {k: "" for k in keys}
 
     def _prepend_memory_use_rule(self, payload):
+        """Prepend step-specific memory-use instructions to visible history."""
         rule = _memory_use_rules_for_step(getattr(self, "memory_step_kind", ""))
         if not rule:
             return payload
@@ -5270,12 +5711,19 @@ class GatedConversationBufferMemory(ConversationBufferMemory):
         return payload
 
     def load_memory_variables(self, inputs):
+        """
+        Return visible memory to LangChain only when the history gate is open.
+        
+            The method overrides ConversationBufferMemory behavior so a run can distinguish between storing
+            interaction history and actually conditioning future LLM calls on that history.
+        """
         if not bool(getattr(self, "expose_history", True)):
             return self._empty_payload()
         payload = super().load_memory_variables(inputs)
         return self._prepend_memory_use_rule(payload)
 
     async def aload_memory_variables(self, inputs):
+        """Memory-gate method for aload memory variables."""
         if not bool(getattr(self, "expose_history", True)):
             return self._empty_payload()
         parent = super()
@@ -5347,6 +5795,12 @@ def _conversation_has_visible_history(conversation_or_memory) -> int:
 # ============================
 
 def _msg_role(msg) -> str:
+    """
+    Return a LangChain message role in native-Ollama form.
+    
+        The native API expects roles such as system, user, and assistant. This helper hides version-specific
+        message-object differences from the message collection code.
+    """
     t = getattr(msg, "type", "") or msg.__class__.__name__
     tl = str(t).lower()
     if "human" in tl or "user" in tl:
@@ -5358,6 +5812,12 @@ def _msg_role(msg) -> str:
     return str(t)
 
 def _msg_text(msg) -> str:
+    """
+    Return text content from a LangChain message-like object.
+    
+        Different LangChain versions expose message content through slightly different attributes. This
+        helper gives tracing and native message conversion one stable access point.
+    """
     c = getattr(msg, "content", "")
     # Some message types store content as list of parts; stringify safely.
     if isinstance(c, list):
@@ -5368,6 +5828,12 @@ def _msg_text(msg) -> str:
     return str(c)
 
 def _get_history_messages(conversation):
+    """
+    Return the current conversation memory messages in a wrapper-compatible form.
+    
+        LangChain memory internals vary across versions. This helper isolates the access pattern so trace
+        logging and native Ollama message construction can use the same history retrieval logic.
+    """
     try:
         mem = getattr(conversation, "memory", None)
         if mem is None:
@@ -5482,15 +5948,24 @@ def _trace_output(output_text: str, tag: str = "LLM") -> None:
 
 
 class Agent:
+    """
+    Simulation agent backed by two LLM chains, one for speaking and one for listening.
+    
+        Each Agent owns a stable persona, a mutable belief state, optional/light memory buffers, counters,
+        true-open notes, and transcript logs. The simulation loop calls produce_tweet for Step-2 and
+        receive_tweet for Step-3.
+    """
     def __init__(
         self, agent_id, persona, model_name, temperature, max_tokens, prompt_template_root,
         top_p=None, top_k=None, repeat_penalty=None, repeat_last_n=None, llm_seed=None,
     ):
-        """Constructor that initializes an object of type Agent
-
-        Args:
-            agent_id (int): Identification entity for the LLM Agent
-            persona (str): Persona to be embodied by the LLM agent
+        """
+        Initialize one LLM-backed agent and its runtime state.
+        
+            The constructor stores identity, initial/current belief, persona fields, memory buffers, logging
+            containers, true-open notes, and per-step LLM settings. It also creates separate Step-2 and Step-3
+            ChatOllama/ConversationChain objects so speaking and listening can use different prompts and
+            decoding parameters.
         """
         # Initialize LLM agent, its identity, name, and persona by reading as step #1
         self.agent_id = agent_id
@@ -5587,6 +6062,12 @@ class Agent:
         # We allow separate decoding settings for Step-2 (tweet) and Step-3 (belief update).
         # Both LLM chains share the SAME LangChain memory object, so history stays consistent.
         def _pick(step_val, global_val):
+            """
+            Choose a per-step LLM setting override, falling back to the global setting.
+            
+                Step-2 and Step-3 can use different decoding parameters. This helper keeps that override logic
+                compact and consistently typed inside Agent initialization.
+            """
             return global_val if step_val is None else step_val
 
         # Model overrides (optional)
@@ -5823,6 +6304,12 @@ class Agent:
         self.last_step3_tool_meta = {}
 
     def append_network_log(self, text):
+        """
+        Append one human-readable entry to the agent transcript log.
+        
+            These transcript logs are for qualitative inspection and do not affect model conditioning unless
+            memory/history is explicitly enabled through the run configuration.
+        """
         try:
             s = str(text or '').rstrip()
         except Exception:
@@ -5830,7 +6317,12 @@ class Agent:
         if s:
             self.network_log_entries.append(s)
     def receive_tweet(self, tweet, previous_interaction_type, tweet_written_count, add_to_memory, allowed_ratings=None, allowed_set_str=None, speaker_belief=None):
-        """Receive a tweet from another agent, and produce a response. The response contains the agent's updated opinion.
+        """
+        Run Step-3 for this listener: read a tweet and update the agent's belief.
+        
+            The method builds the listener prompt, injects persona/world/RAG/fact-pack context, applies the
+            precomputed allowed-rating set, calls the Step-3 LLM pipeline, updates current_belief from the
+            finalized output, and logs the interaction transcript.
         """
         assert previous_interaction_type in ["write", "read", "none"]
         _set_current_persona_validation_policy(getattr(self, "persona_policy", {}))
@@ -6058,13 +6550,12 @@ class Agent:
         return response
 
     def produce_tweet(self, previous_interaction_type, tweet_written_count, add_to_memory):
-        """Produce a tweet based on the agent's current opinion (Step 2).
-
-        Current protocol (no R-tags):
-          - Step-2 output is exactly 2 lines:
-              FINAL_RATING: X
-              TWEET: <tweet text>
-          - The tweet text should clearly communicate the speaker stance and remain claim-focused.
+        """
+        Run Step-2 for this speaker: generate a public tweet from the current belief.
+        
+            The method builds the speaker prompt, injects persona/world/RAG/fact-pack context, calls the
+            Step-2 LLM pipeline, sanitizes the output, and caches the public tweet so the listener handoff can
+            recover from minor formatting artifacts.
         """
         assert previous_interaction_type in ["write", "read", "none"]
         _set_current_persona_validation_policy(getattr(self, "persona_policy", {}))
@@ -6233,7 +6724,12 @@ class Agent:
         tweet_seen=None,
         response=None,
     ):
-        """Add the text to the agent's memory."""
+        """
+        Store a compact interaction note in this agent's conversation memory.
+        
+            Memory storage and memory visibility are separate controls. This method may record history for
+            future memory-enabled runs or logs even when current Markovian runs hide that history from the LLM.
+        """
         if current_interaction_type == "write":
             assert tweet_written is not None
         elif current_interaction_type == "read":
@@ -6377,15 +6873,13 @@ class Agent:
                     )
                 self._append_memory_event(prompt, current_interaction_type=current_interaction_type, rating_snapshot=self.current_belief)
 
-    def _memory_chat_messages(self):
-        try:
-            mem = self.memory.memory.chat_memory
-            msgs = getattr(mem, 'messages', None)
-            return msgs if msgs is not None else []
-        except Exception:
-            return []
-
     def _append_memory_event(self, prompt_text: str, *, current_interaction_type: str = '', rating_snapshot=None):
+        """
+        Append one structured event to the light-memory buffer.
+        
+            Light memory stores recent interactions as compact records instead of full transcripts. This keeps
+            future prompts shorter while preserving enough belief-path context for memory-enabled conditions.
+        """
         prompt = str(prompt_text or '').strip()
         if not prompt:
             return
@@ -6414,6 +6908,12 @@ class Agent:
         self._rebuild_light_memory_history()
 
     def _belief_path_message(self) -> str:
+        """
+        Summarize the agent's belief trajectory for light-memory prompts.
+        
+            The summary gives memory-enabled agents a compact view of how their own rating has changed over
+            time without replaying every previous interaction.
+        """
         if not MEMORY_LIGHT_ENABLED:
             return ''
         recent = self.memory_events[-LIGHT_MEMORY_BELIEF_PATH_LEN:]
@@ -6428,6 +6928,12 @@ class Agent:
         return 'Recent belief path (oldest -> newest): ' + ' -> '.join(ratings)
 
     def _selected_light_memory_events(self):
+        """
+        Select the subset of compact memory events that should remain visible.
+        
+            Light-memory mode intentionally keeps only a recent or representative subset so prompts do not grow
+            unbounded during long simulations.
+        """
         if not MEMORY_LIGHT_ENABLED:
             return list(self.memory_events)
         events = list(self.memory_events)
@@ -6450,6 +6956,12 @@ class Agent:
         return sorted((recent_events + extra_own), key=lambda e: int(e.get('seq', 0)))
 
     def _rebuild_light_memory_history(self):
+        """
+        Reconstruct the visible memory buffer from selected compact memory events.
+        
+            This is used after adding or pruning light-memory records so the LangChain memory object reflects
+            the compressed history that the run configuration allows the LLM to see.
+        """
         if not MEMORY_LIGHT_ENABLED:
             return
         try:
@@ -6477,18 +6989,23 @@ class Agent:
                 pass
 
     def get_count_tweet_written(self):
+        """Agent method for get count tweet written within the simulation runtime."""
         return self.count_tweet_written
 
     def increase_count_tweet_written(self):
+        """Agent method for increase count tweet written within the simulation runtime."""
         self.count_tweet_written += 1
 
     def get_count_tweet_seen(self):
+        """Agent method for get count tweet seen within the simulation runtime."""
         return self.count_tweet_seen
 
     def increase_count_tweet_seen(self):
+        """Agent method for increase count tweet seen within the simulation runtime."""
         self.count_tweet_seen += 1
 
     def outdate_persona_memory(self):
+        """Agent method for outdate persona memory within the simulation runtime."""
         self.persona = convert_text_from_present_to_past(self.persona)
 
 
@@ -6544,6 +7061,7 @@ def _should_use_native_ollama_chat(conversation) -> bool:
 
 
 def _lc_message_to_ollama_dict(msg) -> dict:
+    """Convert a LangChain message object into the role/content format expected by Ollama."""
     role = _msg_role(msg).lower()
     if role == 'human':
         role = 'user'
@@ -6558,6 +7076,7 @@ def _lc_message_to_ollama_dict(msg) -> dict:
 
 
 def _split_prompt_blocks_preserve_prefix(text: str) -> tuple[str, list[str]]:
+    """Split prompt text while preserving qwen control prefixes."""
     s = str(text or '')
     prefix = ''
     body = s
@@ -6573,6 +7092,7 @@ def _split_prompt_blocks_preserve_prefix(text: str) -> tuple[str, list[str]]:
 
 
 def _normalize_prompt_block(block: str) -> str:
+    """Normalize one prompt block before native Ollama message construction."""
     return re.sub(r"\s+", " ", str(block or '')).strip().lower()
 
 
@@ -6605,6 +7125,13 @@ def _dedupe_user_message_against_system(system_content: str, user_content: str) 
 
 
 def _collect_native_ollama_messages(conversation, prompt_text: str, include_history: bool = True):
+    """
+    Assemble the native Ollama chat message list for one LLM call.
+    
+        The function combines system prompt, optionally visible memory/history, and current user prompt,
+        while avoiding duplicated prompt blocks. It is the native-path equivalent of what LangChain would
+        send through ConversationChain.
+    """
     history = _history_messages_with_memory_use_rule(conversation, include_history=include_history)
     try:
         formatted = conversation.prompt.format_prompt(history=history, input=prompt_text)
@@ -6637,6 +7164,7 @@ def _collect_native_ollama_messages(conversation, prompt_text: str, include_hist
     return out
 
 def _extract_native_ollama_text(payload: dict) -> str:
+    """Extract final assistant content from a native Ollama response object."""
     if not isinstance(payload, dict):
         return ''
     msg = payload.get('message') or {}
@@ -6667,6 +7195,7 @@ def _extract_native_ollama_text(payload: dict) -> str:
 
 
 def _extract_native_ollama_thinking(payload: dict) -> str:
+    """Extract qwen thinking content from a native Ollama response object."""
     if not isinstance(payload, dict):
         return ''
     msg = payload.get('message') or {}
@@ -6679,6 +7208,7 @@ def _extract_native_ollama_thinking(payload: dict) -> str:
     return str(thinking or '').strip()
 
 def _get_native_ollama_endpoint(conversation) -> str:
+    """Resolve the native Ollama endpoint URL from the configured LLM object."""
     llm = getattr(conversation, 'llm', None)
     for attr in ('base_url', 'client_kwargs'):
         try:
@@ -6726,6 +7256,13 @@ def _native_ollama_request_headers(base_url: str = '') -> dict:
 
 
 def _collect_native_ollama_options(conversation) -> tuple[str, dict, object]:
+    """
+    Translate wrapper-level LLM settings into native Ollama API options.
+    
+        The native API uses names such as num_predict, repeat_penalty, and top_p. This helper extracts the
+        values from the ChatOllama object, applies prompt-level think overrides, and returns a clean options
+        dictionary for /api/chat.
+    """
     llm = getattr(conversation, 'llm', None)
     model = str(getattr(llm, 'model', '') or '').strip()
     options = {}
@@ -6799,6 +7336,7 @@ def _collect_native_ollama_options(conversation) -> tuple[str, dict, object]:
 
 
 def _save_native_ollama_turn(conversation, prompt_text: str, reply_text: str) -> None:
+    """Manually store a native Ollama user/assistant turn in LangChain memory."""
     try:
         mem = getattr(conversation, 'memory', None)
         chat_mem = getattr(mem, 'chat_memory', None)
@@ -6815,6 +7353,7 @@ def _save_native_ollama_turn(conversation, prompt_text: str, reply_text: str) ->
 
 
 def _extract_prompt_int_field(prompt_text: str, field_name: str, default: int | None = None) -> int | None:
+    """Extract one integer field from prompt text by label."""
     try:
         m = re.search(rf"(?im)^\s*{re.escape(str(field_name))}\s*:\s*([+-]?\d+)\s*$", str(prompt_text or ""))
         return int(m.group(1)) if m else default
@@ -6823,6 +7362,7 @@ def _extract_prompt_int_field(prompt_text: str, field_name: str, default: int | 
 
 
 def _extract_prompt_allowed_set(prompt_text: str) -> list[int]:
+    """Extract the Step-3 allowed-rating set from prompt text."""
     s = str(prompt_text or "")
     m = re.search(r"(?im)^\s*(?:ALLOWED_FINAL_RATING_SET|ALLOWED_SET)\s*:\s*(\[[^\n]+\])\s*$", s)
     if not m:
@@ -6834,6 +7374,7 @@ def _extract_prompt_allowed_set(prompt_text: str) -> list[int]:
 
 
 def _extract_prompt_tweet_text(prompt_text: str) -> str:
+    """Extract the tweet shown to the listener from prompt text."""
     s = str(prompt_text or "")
     m = re.search(
         r"(?is)\nTWEET:\s*\n(.*?)\n\s*\n(?:Remember,|Open-world addition:|Evaluation rule|Task|Rating scale meaning|Decision rule|How to think about the rating|Explanation rule|Output discipline|Output format:|ALLOWED_FINAL_RATING_SET:|ALLOWED_SET:)",
@@ -6845,6 +7386,7 @@ def _extract_prompt_tweet_text(prompt_text: str) -> str:
 
 
 def _extract_compact_step3_shown_material(prompt_text: str, *, max_items: int = 2, max_chars_per_item: int = 240) -> str:
+    """Extract compact shown-material context from a Step-3 prompt."""
     s = str(prompt_text or "")
     if not s:
         return ""
@@ -6881,6 +7423,7 @@ def _extract_compact_step3_shown_material(prompt_text: str, *, max_items: int = 
 
 
 def _extract_reasoning_quoted_candidate(raw_text: str, field: str = "tweet") -> str:
+    """Recover a likely protocol answer from qwen thinking text."""
     s = str(raw_text or "")
     if not s:
         return ""
@@ -6939,6 +7482,13 @@ def _classify_tweet_stance(tweet_text: str) -> str | None:
 
 
 def _recover_native_qwen_empty_content(prompt_text: str, thinking_text: str, step_ctx: str) -> str:
+    """
+    Recover a protocol answer when qwen returns thinking but empty final content.
+    
+        Some qwen reasoning runs place useful final-rating information inside the thinking field while the
+        visible message content is empty. This recovery path attempts a conservative reconstruction using
+        the prompt, allowed set, and thinking text before falling back to normal repair logic.
+    """
     step_norm = str(step_ctx or "").strip().lower()
     claim_txt = _current_claim_text(prompt_text)
     if step_norm.startswith("step2"):
@@ -6978,6 +7528,13 @@ def _recover_native_qwen_empty_content(prompt_text: str, thinking_text: str, ste
 
 
 def _native_ollama_chat(conversation, prompt_text: str, *, include_history: bool = True, save_turn: bool = True, seed_override: int | None = None) -> str:
+    """
+    Execute one direct Ollama /api/chat call with qwen-aware retries and logging.
+    
+        The native path is preferred for qwen because it exposes thinking, done reasons, and low-level
+        options more reliably than the wrapper. The function handles length retries, empty-content recovery,
+        debug dumps, memory saving, and native-events logging.
+    """
     import requests
 
     model, options, think = _collect_native_ollama_options(conversation)
@@ -7130,6 +7687,7 @@ def _native_ollama_chat(conversation, prompt_text: str, *, include_history: bool
 
 
 def _extract_chatollama_invoke_text(resp) -> str:
+    """Extract assistant text from a LangChain ChatOllama invoke response."""
     if resp is None:
         return ''
     if isinstance(resp, str):
@@ -7198,6 +7756,7 @@ def _extract_chatollama_invoke_text(resp) -> str:
 
 
 def _extract_chatollama_invoke_thinking(resp) -> str:
+    """Extract qwen thinking metadata from a ChatOllama response when available."""
     if resp is None:
         return ''
     if isinstance(resp, str):
@@ -7256,6 +7815,7 @@ def _extract_chatollama_invoke_thinking(resp) -> str:
 
 
 def _recover_wrapper_empty_output(conversation, prompt, *, resp=None, use_history: bool = True, save_turn: bool = True):
+    """Recover a wrapper-path output when ChatOllama returns empty content."""
     recovered = ''
     recovery_source = ''
     try:
@@ -7299,6 +7859,13 @@ def _recover_wrapper_empty_output(conversation, prompt, *, resp=None, use_histor
 
 
 def _invoke_chatollama_path(conversation, prompt, *, use_history: bool = True, save_turn: bool = True):
+    """
+    Execute one LLM call through the LangChain ChatOllama wrapper.
+    
+        This wrapper path is used when native mode is disabled or as a fallback after a native failure. It
+        applies temporary qwen think overrides, extracts text from several possible response formats, and
+        restores wrapper state afterward.
+    """
     out = ''
     resp = None
     _restore_prompt_control_think = _set_wrapper_prompt_control_think_override(conversation, prompt)
@@ -7381,6 +7948,13 @@ def _invoke_chatollama_path(conversation, prompt, *, use_history: bool = True, s
 
 
 def get_llm_response(conversation, prompt, *, use_history: bool = True, save_turn: bool = True):
+    """
+    Route a Step-2 or Step-3 prompt through the configured LLM execution path.
+    
+        This is the single high-level LLM entry point. It traces prompts/outputs when requested, chooses
+        native versus wrapper execution, falls back when needed, and returns plain text to the Step-specific
+        validation pipeline.
+    """
     if USE_FAKE_LLM:
         m = re.search(r"name:\s*([^,]+)", prompt)
         name = m.group(1).strip() if m else "Agent"
@@ -7485,6 +8059,7 @@ def _strip_model_think_and_fence_artifacts(text: str) -> str:
 
     # Unwrap fenced code blocks while preserving their contents.
     def _unwrap_fence(m):
+        """Remove one layer of markdown code-fence wrapping from model output."""
         inner = (m.group(1) or "").strip()
         return ("\n" + inner + "\n") if inner else "\n"
 
@@ -7523,6 +8098,7 @@ def _normalize_protocol_headers(text: str) -> str:
     s = re.sub(r"(?im)^\s*[>•\-*]+\s*(?=(?:\*\*|__|`)?\s*(?:FINAL(?:_| )RATING|TWEET|EXPLANATION|ANCHOR|REASONING|REASON)\b)", "", s)
 
     def _repl(m):
+        """Normalize one matched protocol header to the canonical spelling."""
         header = (m.group(1) or "").strip().upper().replace(" ", "_")
         return f"{header}: "
 
@@ -7815,6 +8391,7 @@ def _limit_to_n_sentences(text: str, max_sentences: int = 2) -> str:
 
 
 def _compact_step2_tweet_text(tweet_text: str, max_sentences: int = 2) -> str:
+    """Compact a Step-2 tweet so the public handoff remains short and readable."""
     s = re.sub(r"\s+", " ", str(tweet_text or "")).strip()
     if not s:
         return ""
@@ -7950,14 +8527,17 @@ def sanitize_tweet_for_listener(step2_output: str) -> str:
 
 
 def _recover_step2_tweet_for_listener(speaker_agent=None, step2_output: str = "", sanitized_text: str = "") -> str:
-    """Recover the natural public tweet that should cross the speaker->listener boundary.
-
-    This is a pre-Step-3 pipeline guard. It does not rewrite semantics and it does not
-    call the LLM; it only searches already-produced Step-2 artifacts in a safe order.
+    """
+    Recover the public tweet body that should be handed from speaker to listener.
+    
+        The handoff is stricter than display parsing: it must avoid passing labels, prompt fragments, or
+        empty strings to Step-3. This function tries sanitized output, raw output, cached same-step output,
+        and lenient extraction in that order.
     """
     candidates = []
 
     def _add_candidate(value):
+        """Add a possible tweet-handoff candidate if it is non-empty and new."""
         try:
             v = str(value or "").strip()
         except Exception:
@@ -8155,7 +8735,12 @@ def _extract_step2_tweet_for_handoff_lenient(text: str) -> str:
 
 
 def _step2_handoff_artifact_diag(speaker_agent=None, *, step2_return: str = "", sanitized_text: str = "") -> dict:
-    """Lengths for diagnosing where Step-2 text is lost before Step-3."""
+    """
+    Summarize where Step-2 handoff content disappeared.
+    
+        The returned lengths and flags help distinguish an LLM that produced no tweet from a parser or
+        sanitizer that lost the tweet before Step-3.
+    """
     out = {
         'sanitized_len': len(str(sanitized_text or '')),
         'step2_return_len': len(str(step2_return or '')),
@@ -8183,6 +8768,12 @@ def _recover_same_step_step2_tweet_for_handoff(speaker_agent=None, *, step2_retu
     labeled = []
 
     def add(label, value):
+        """
+        Add one recovered handoff candidate if it is usable and not a duplicate.
+        
+            This local helper keeps the candidate recovery order explicit while avoiding repeated tweet bodies
+            in the fallback search list.
+        """
         v = str(value or "").strip()
         if v:
             labeled.append((label, v))
@@ -8239,6 +8830,7 @@ def _recover_same_step_step2_tweet_for_handoff(speaker_agent=None, *, step2_retu
 
 
 def _format_step2_handoff_diag_note(diag: dict, *, speaker_name: str = "", listener_name: str = "", source: str = "") -> str:
+    """Format Step-2 handoff diagnostics for logs and summaries."""
     parts = []
     if speaker_name:
         parts.append(f"speaker={speaker_name}")
@@ -8253,12 +8845,12 @@ def _format_step2_handoff_diag_note(diag: dict, *, speaker_name: str = "", liste
 
 
 def sanitize_step2_output(raw: str) -> str:
-    """Make Step-2 output robust for downstream parsing.
-
-    Important boundary policy:
-    - never invent a TWEET line from the first non-empty line after FINAL_RATING
-    - never return protocol residue as if it were a valid tweet
-    - fail closed ("") when protocol recovery is not trustworthy
+    """
+    Normalize Step-2 output while failing closed on missing or unsafe tweet text.
+    
+        The sanitizer accepts minor header variants but does not invent public tweet content from protocol
+        residue. Its job is to produce a safe two-line FINAL_RATING/TWEET payload or leave enough evidence
+        for the validator to trigger repair.
     """
     if raw is None:
         return ""
@@ -8307,6 +8899,7 @@ def sanitize_step2_output(raw: str) -> str:
     # Optional legacy anchor folding, but only into a valid tweet body.
     if anchor_line:
         def _starts_with_anchor(x: str) -> bool:
+            """Return whether text begins with an old-style rating anchor sentence."""
             return bool(re.match(r"(?is)^I\s+(?:accept|reject)\s+the\s+claim\s+as\s+written\s*:", x)) or bool(
                 re.match(r"(?is)^I\s+am\s+unsure\s+about\s+the\s+claim\s+as\s+written\s*:", x)
             )
@@ -8505,6 +9098,7 @@ def _grounded_term_families_in_text(text: str) -> set[str]:
 
 
 def _normalized_grounding_text(text: str) -> str:
+    """Return normalized grounding text for lexical groundedness checks."""
     s = str(text or "").lower()
     s = re.sub(r"[^a-z0-9\s]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
@@ -8512,6 +9106,7 @@ def _normalized_grounding_text(text: str) -> str:
 
 
 def _matched_text_is_explicitly_grounded(match_text: str, grounding_text: str) -> bool:
+    """Check whether a generated phrase is supported by shown grounding text."""
     mt = _normalized_grounding_text(match_text)
     gt = _normalized_grounding_text(grounding_text)
     return bool(mt and gt and mt in gt)
@@ -8630,6 +9225,7 @@ def _unsupported_external_reference_flags(tweet_text: str, world_mode: str, fact
 
 
 def _record_step2_success_metrics(source: str, contaminated: bool = False):
+    """Increment Step-2 success metrics after a valid tweet is accepted."""
     src = str(source or "main").strip().lower()
     src = "rescue" if src.startswith("rescue") else "main"
     key = f"step2_{src}_success_{'contaminated' if contaminated else 'clean'}"
@@ -8637,6 +9233,7 @@ def _record_step2_success_metrics(source: str, contaminated: bool = False):
 
 
 def _step3_has_strict_closed_contamination(warning_list) -> bool:
+    """Detect Step-3 explanations that introduce forbidden outside knowledge."""
     for w in (warning_list or []):
         ws = str(w or "").strip().lower()
         if ws.startswith("strict_closed_"):
@@ -8645,6 +9242,7 @@ def _step3_has_strict_closed_contamination(warning_list) -> bool:
 
 
 def _record_step3_success_metrics(source: str = "main", contaminated: bool = False):
+    """Increment Step-3 success metrics after a valid belief update is accepted."""
     src = str(source or "main").strip().lower()
     if src not in {"main", "rescue"}:
         src = "main"
@@ -8708,6 +9306,7 @@ def _extract_tweet_from_step3_prompt(prompt_text: str) -> str:
 
 
 def _split_simple_sentences(text: str):
+    """Split text into simple sentence-like units for explanation checks."""
     if not text:
         return []
     s = re.sub(r"\s+", " ", str(text)).strip()
@@ -8718,6 +9317,7 @@ def _split_simple_sentences(text: str):
 
 
 def _strip_tweet_reason_noise(text: str) -> str:
+    """Remove filler and protocol noise before comparing tweet reasons."""
     if not text:
         return ""
     s = str(text)
@@ -8956,6 +9556,7 @@ def no_move_if_weak_reason(tweet_text: str) -> bool:
 _STEP3_TOPIC_HELPERS_PATCH = True
 
 def _step3_explanation_on_topic(expl_text: str, tweet_text: str = "") -> bool:
+    """Check whether a Step-3 explanation is grounded in the tweet, claim, or shown material."""
     expl = re.sub(r"\s+", " ", str(expl_text or "")).strip()
     tw = re.sub(r"\s+", " ", str(tweet_text or "")).strip()
     if not expl:
@@ -8976,6 +9577,7 @@ def _step3_explanation_on_topic(expl_text: str, tweet_text: str = "") -> bool:
     return any(m in expl_low and m in tw_low for m in motifs)
 
 def _step3_expl_semantic_label(expl: str) -> str | None:
+    """Classify a Step-3 explanation as supporting, opposing, mixed, or unknown."""
     low = re.sub(r"\s+", " ", str(expl or "")).strip().lower()
     if not low:
         return None
@@ -9004,6 +9606,7 @@ def _step3_expl_semantic_label(expl: str) -> str | None:
     return None
 
 def _visible_planning_meta_reason(text: str, field: str = "generic") -> str | None:
+    """Detect visible planning or self-monitoring language in a model explanation."""
     low = re.sub(r"\s+", " ", str(text or "")).strip().lower()
     if not low:
         return None
@@ -9018,6 +9621,7 @@ def _visible_planning_meta_reason(text: str, field: str = "generic") -> str | No
     return None
 
 def _generic_canned_reason_reason(text: str, field: str = "generic") -> str | None:
+    """Detect generic canned explanations that do not respond to the tweet."""
     low = re.sub(r"\s+", " ", str(text or "")).strip().lower()
     if not low:
         return None
@@ -9033,6 +9637,7 @@ def _generic_canned_reason_reason(text: str, field: str = "generic") -> str | No
     return None
 
 def _step3_generic_gap_reason(text: str, tweet_text: str = "", pre_value: int | None = None, final_value: int | None = None, tweet_stance_local: str | None = None) -> str | None:
+    """Detect overly generic Step-3 explanations about evidence gaps."""
     expl = re.sub(r"\s+", " ", str(text or "")).strip()
     if not expl:
         return "missing_explanation_text"
@@ -9139,6 +9744,7 @@ def _same_side_weakening_soften_allowed(pre_belief: int, proposed_rating: int, t
 
 
 def _tweet_has_explicit_balancing_clause(tweet_text: str = "") -> bool:
+    """Return whether a tweet contains an explicit contrast or balancing clause."""
     tw = re.sub(r"\s+", " ", str(tweet_text or "")).strip().lower()
     if not tw:
         return False
@@ -9148,6 +9754,7 @@ def _tweet_has_explicit_balancing_clause(tweet_text: str = "") -> bool:
 
 
 def _step3_explanation_has_contrastive_weakening(explanation_text: str = "") -> bool:
+    """Detect explanations that accept part of a point while weakening its conclusion."""
     expl = re.sub(r"\s+", " ", str(explanation_text or "")).strip().lower()
     if not expl:
         return False
@@ -9155,6 +9762,7 @@ def _step3_explanation_has_contrastive_weakening(explanation_text: str = "") -> 
 
 
 def _is_hard_step3_polarity_contradiction(final_rating: int, explanation_text: str, tweet_text: str = "", tweet_stance_local: str | None = None) -> bool:
+    """Return whether rating direction and explanation polarity clearly contradict each other."""
     expl = re.sub(r"\s+", " ", str(explanation_text or "")).strip()
     if not expl:
         return False
@@ -9329,6 +9937,7 @@ def _canonical_step3_explanation(tag: str, pre_belief: int, final_rating: int, e
         return _step3_generic_anchor_for_rating(final_i, None)
 
 def _step3_force_rating_aligned_explanation(explanation_text: str, final_rating: int) -> str:
+    """Rewrite a Step-3 explanation so it is consistent with the chosen final rating."""
     try:
         r = int(final_rating)
     except Exception:
@@ -9352,6 +9961,7 @@ def _step3_force_rating_aligned_explanation(explanation_text: str, final_rating:
     return expl
 
 def _rewrite_step3_output_with_explanation(final_rating: int, explanation: str) -> str:
+    """Replace only the explanation part of a Step-3 protocol output."""
     explanation = _step3_force_rating_aligned_explanation(explanation, int(final_rating))
     explanation = re.sub(r"\s+", " ", str(explanation or "")).strip()
     return f"FINAL_RATING: {int(final_rating)}\nEXPLANATION: {explanation}"
@@ -9370,6 +9980,7 @@ def _format_step3_output_preserve_explanation(final_rating: int, explanation: st
 
 
 def _step3_text_has_oppose_markers(text: str) -> bool:
+    """Detect anti-claim markers in Step-3 explanation text."""
     s = re.sub(r"\s+", " ", str(text or "")).strip().lower()
     if not s:
         return False
@@ -9396,6 +10007,7 @@ def _step3_text_has_oppose_markers(text: str) -> bool:
 
 
 def _step3_text_has_support_markers(text: str) -> bool:
+    """Detect pro-claim markers in Step-3 explanation text."""
     s = re.sub(r"\s+", " ", str(text or "")).strip().lower()
     if not s:
         return False
@@ -9424,6 +10036,7 @@ def _step3_text_has_support_markers(text: str) -> bool:
 
 
 def _step3_tweet_clause_direction(clause_text: str) -> str:
+    """Classify a tweet clause as support, opposition, mixed, or unknown."""
     s = re.sub(r"\s+", " ", str(clause_text or "")).strip().lower()
     if not s:
         return "unknown"
@@ -9441,6 +10054,7 @@ def _step3_tweet_clause_direction(clause_text: str) -> str:
 
 
 def _step3_trim_tweet_clause(clause_text: str, max_words: int = 18) -> str:
+    """Trim a tweet clause to the most useful local evidence phrase."""
     s = re.sub(r"\s+", " ", str(clause_text or "")).strip()
     s = re.sub(r"(?i)^(i think|i lean(?: toward| towards)?|not sure if|i'm not sure if|i am not sure if|strongly disagree[—:-]?|strongly agree[—:-]?|i'm unsure if|i am unsure if)\s*", "", s).strip(" ,;:-")
     s = re.sub(r"(?i)^(the moon landing|moon landing|the moon landings|moon landings|us astronauts landed on the moon|us astronauts have landed on the moon)\s+(?:was|were|is|are)\s+", "", s).strip(" ,;:-")
@@ -9456,6 +10070,7 @@ def _step3_trim_tweet_clause(clause_text: str, max_words: int = 18) -> str:
 
 
 def _step3_extract_tweet_local_clauses(tweet_text: str) -> tuple[str, str]:
+    """Extract tweet-local clauses used to build grounded Step-3 explanations."""
     s = re.sub(r"\s+", " ", str(tweet_text or "")).strip()
     if not s:
         return "", ""
@@ -9464,6 +10079,7 @@ def _step3_extract_tweet_local_clauses(tweet_text: str) -> tuple[str, str]:
         return _step3_trim_tweet_clause(parts[0]), _step3_trim_tweet_clause(parts[1])
     return _step3_trim_tweet_clause(s), ""
 def _step3_point_fragment(clause: str) -> str:
+    """Return a compact phrase describing the tweet point being evaluated."""
     s = re.sub(r"\s+", " ", str(clause or "")).strip(" ,.;:-")
     if not s:
         return "one concrete point"
@@ -9494,6 +10110,7 @@ def _step3_point_fragment(clause: str) -> str:
 
 
 def _step3_point_sentence(clause: str) -> str:
+    """Return a sentence-form description of the tweet point being evaluated."""
     return f"The tweet highlights {_step3_point_fragment(clause)}"
 
 
@@ -9538,6 +10155,7 @@ def _step3_challenge_point_sentence(clause: str) -> str:
 
 
 def _step3_tweet_local_explanation(tweet_text: str, final_rating: int, pre_belief: int, tweet_stance: str | None = None) -> str:
+    """Build a Step-3 fallback explanation anchored directly in the tweet."""
     try:
         final_i = int(final_rating)
     except Exception:
@@ -9640,6 +10258,7 @@ def _step3_illegal_rating_fallback_explanation(tweet_text: str, fallback_rating:
 
 
 def _step3_rating_direction_label(rating: int | None) -> str:
+    """Map a Step-3 rating to a prose direction label."""
     try:
         r = int(rating)
     except Exception:
@@ -9652,6 +10271,7 @@ def _step3_rating_direction_label(rating: int | None) -> str:
 
 
 def _step3_movement_direction_label(pre_belief: int | None, final_rating: int | None) -> str:
+    """Describe whether the listener moved up, down, or stayed unchanged."""
     try:
         p = int(pre_belief)
         r = int(final_rating)
@@ -9662,44 +10282,6 @@ def _step3_movement_direction_label(pre_belief: int | None, final_rating: int | 
     if r < p:
         return "oppose"
     return "stay"
-
-
-def _step3_allowed_explanation_directions(pre_belief: int | None, final_rating: int) -> set[str]:
-    """Return broad semantic anchors that can explain this Step-3 transition.
-
-    This intentionally stays topic-general. "support" means a reason in favor of
-    the CLAIM, not moon-specific evidence; "oppose" means a reason against the
-    CLAIM; "balanced" means the explanation explicitly keeps both sides live.
-
-    A transition can be explained by the final rating, the movement direction,
-    or a bounded partial-update rationale. The stricter bounded checks are done
-    in _step3_explanation_wrong_side_anchor(...).
-    """
-    dirs: set[str] = set()
-    try:
-        r = int(final_rating)
-    except Exception:
-        return {"unknown"}
-    try:
-        p = int(pre_belief)
-    except Exception:
-        p = None
-
-    # Final-rating anchor.
-    dirs.add(_step3_rating_direction_label(r))
-
-    # Movement anchor.
-    if p is not None:
-        mv = _step3_movement_direction_label(p, r)
-        if mv in {"support", "oppose"}:
-            dirs.add(mv)
-        # Moving into 0 is a special case: the safest explanation for memory is
-        # balanced. Pure one-sided movement explanations are allowed only if they
-        # explicitly contain limiting / balancing language, handled later.
-        if r == 0:
-            dirs.add("balanced")
-
-    return {d for d in dirs if d and d != "unknown"} or {"unknown"}
 
 
 def _step3_explanation_direction_labels(explanation_text: str) -> set[str]:
@@ -9885,6 +10467,7 @@ def _v130_anti_simulation_families(text: str) -> set[str]:
 
 
 def _v130_family_grounded_in_tweet_or_material(explanation_text: str, tweet_text: str = "", grounding_text: str = "") -> bool:
+    """Check whether a v130 objection family is grounded in the tweet or shown material."""
     expl_families = _v130_anti_simulation_families(explanation_text)
     if not expl_families:
         return False
@@ -10271,6 +10854,7 @@ def _step3_safe_fallback_explanation_for_rating(tweet_text: str, final_rating: i
 
 
 def _step3_explanation_echoes_tweet_evidence_complaint(explanation_text: str, tweet_text: str = "") -> bool:
+    """Detect when a Step-3 explanation correctly echoes a tweet evidence/testability complaint."""
     expl = re.sub(r"\s+", " ", str(explanation_text or "")).strip().lower()
     tweet = re.sub(r"\s+", " ", str(tweet_text or "")).strip().lower()
     if not expl or not tweet:
@@ -10349,6 +10933,7 @@ def _step3_strict_closed_external_reason_reason(explanation_text: str, tweet_tex
 
 
 def _interaction_quality_label(tags) -> str:
+    """Classify an interaction as move, hold, invalid, or artifact for reporting."""
     tag_list = [str(t).strip() for t in (tags or []) if str(t).strip()]
     if any(
         ('repair_attempt_failed' in t)
@@ -10363,6 +10948,7 @@ def _interaction_quality_label(tags) -> str:
     return "ok"
 
 def _sentence_case_cleanup(text: str) -> str:
+    """Clean capitalization and spacing after deterministic explanation rewriting."""
     s = re.sub(r"\s+", " ", str(text or "")).strip()
     if not s:
         return ""
@@ -10552,7 +11138,13 @@ def _step3_expl_semantic_label(expl: str) -> str | None:
 
 
 def validate_step3_output(text: str, pre_belief: int, claim: str = "", max_step_change: int = None, allowed_ratings=None):
-    """Validate Step-3 output against the current natural 2-line prompt format."""
+    """
+    Validate a listener Step-3 response against protocol and movement constraints.
+    
+        The validator checks for a legal FINAL_RATING, an explanation, membership in the allowed-rating set,
+        and obvious semantic/protocol contradictions. It returns structured reasons so the caller can decide
+        whether to accept, retry, repair, or fall back.
+    """
     warnings = []
 
     if not text or not str(text).strip():
@@ -10622,14 +11214,11 @@ def validate_step3_output(text: str, pre_belief: int, claim: str = "", max_step_
     return True, "ok", warnings
 
 def sanitize_step3_output(raw: str) -> str:
-    """Make Step-3 output robust for downstream parsing.
-
-    Canonical Step-3 output (2 lines):
-        FINAL_RATING: X
-        EXPLANATION: <single-line anchor sentence>
-
-    We accept minor variants (e.g., "FINAL RATING:"), markdown-decorated headers, fenced output,
-    and we collapse multi-line explanations into a single EXPLANATION line.
+    """
+    Normalize Step-3 output into the canonical FINAL_RATING/EXPLANATION shape.
+    
+        The sanitizer removes qwen/fence artifacts and accepts minor header spelling variants while keeping
+        the final rating and explanation separable for downstream validation and CSV export.
     """
     if raw is None:
         return ""
@@ -10884,6 +11473,7 @@ def _moved_rating_stale_category_wording_tag(pre_value: int, final_value: int, e
 
 
 def _split_step3_explanation_clauses(expl: str) -> list[str]:
+    """Split a Step-3 explanation into candidate reason clauses."""
     s = re.sub(r"\s+", " ", str(expl or "")).strip()
     if not s:
         return []
@@ -10892,6 +11482,7 @@ def _split_step3_explanation_clauses(expl: str) -> list[str]:
 
 
 def _step3_clause_is_category_like(clause: str) -> bool:
+    """Detect clauses that are only category labels rather than actual reasons."""
     s = re.sub(r"\s+", " ", str(clause or "")).strip().lower()
     if not s:
         return False
@@ -10909,6 +11500,7 @@ def _step3_clause_is_category_like(clause: str) -> bool:
 
 
 def _step3_clause_reason_score(clause: str) -> int:
+    """Score an explanation clause for usefulness as a preserved reason."""
     s = re.sub(r"\s+", " ", str(clause or "")).strip()
     low = s.lower()
     if not s:
@@ -10935,6 +11527,7 @@ def _step3_clause_reason_score(clause: str) -> int:
 
 
 def _best_reason_clause_from_explanation(expl: str) -> str | None:
+    """Select the best tweet-grounded reason clause from an explanation."""
     clauses = _split_step3_explanation_clauses(expl)
     if not clauses:
         return None
@@ -10946,6 +11539,7 @@ def _best_reason_clause_from_explanation(expl: str) -> str | None:
 
 
 def _strip_transition_context_for_state_checks(expl: str) -> str:
+    """Remove transition scaffolding before checking semantic state-language markers."""
     s = re.sub(r"\s+", " ", str(expl or "")).strip()
     if not s:
         return ""
@@ -10972,26 +11566,17 @@ def _strip_transition_context_for_state_checks(expl: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _rating_safe_tail_phrase(final_rating: int, same_rating: bool) -> str:
-    r = int(final_rating)
-    if same_rating:
-        return 'and I remain at my current rating.'
-    if r == 2:
-        return 'so I now strongly believe the claim.'
-    if r == 1:
-        return 'so I now somewhat believe the claim.'
-    if r == 0:
-        return 'so I now feel unsure overall about the claim.'
-    if r == -1:
-        return 'so I now somewhat doubt the claim.'
-    return 'so I now strongly reject the claim.'
-
-
-
 
 
 
 def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_memory: bool, agent_name: str = None, allowed_ratings=None, speaker_belief: int | None = None):
+    """
+    Run the full Step-3 listener update pipeline.
+    
+        The function calls the LLM, sanitizes and validates the response, applies one or more repair/rescue
+        paths when protocol or semantic checks fail, enforces the allowed-rating set, logs repair tags, and
+        returns the finalized listener update used to change the agent's belief.
+    """
     _set_memory_step_kind(conversation, "step3")
     """Step-3 call — agent decision is authoritative.
 
@@ -11010,6 +11595,12 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
     # ------------------------------------------------------------------ helpers
 
     def _extract_claim_from_prompt(p: str) -> str:
+        """
+        Extract the active claim from the Step-3 prompt text.
+        
+            The local Step-3 repair code uses the claim when building compact rescue prompts or deterministic
+            explanations without depending on outer-scope globals.
+        """
         if not p:
             return ""
         m = re.search(r"(?im)^\s*CLAIM\s*\(.*?\)\s*:\s*(.+?)\s*$", str(p))
@@ -11020,6 +11611,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return (m.group(1) or "").strip()
 
     def _allowed_set(pre: int):
+        """Normalize the allowed-rating set used by the local validator."""
         pre = int(pre)
         try:
             msc = int(DEFAULT_MAX_STEP_CHANGE) if DEFAULT_MAX_STEP_CHANGE is not None else 1
@@ -11032,6 +11624,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return sorted(allowed)
 
     def _parse_rating(step3_text: str):
+        """Parse a FINAL_RATING value from local Step-3 output text."""
         try:
             r = extract_belief(step3_text)
             return int(r) if r is not None else None
@@ -11039,6 +11632,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
             return None
 
     def _ensure_has_explanation(cleaned_text: str, rating_hint):
+        """Ensure local Step-3 text contains an EXPLANATION field before validation."""
         if cleaned_text:
             r = _parse_rating(cleaned_text)
             expl = _extract_explanation_text(cleaned_text)
@@ -11050,56 +11644,6 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
             return _rewrite_step3_output_with_explanation(final_rating=int(rating_hint), explanation="")
         return str(cleaned_text or "").strip()
 
-    def _clean_step3_soft_meta_explanation(expl_text: str, final_rating: int | None = None) -> str:
-        s = re.sub(r"\s+", " ", str(expl_text or "")).strip()
-        if not s:
-            return ""
-        
-        repls = [
-            (r"(?i)\bwhile my (?:current|existing|prior) (?:view|belief|stance) remains [^,]+,\s*", ""),
-            (r"(?i)\bwhile my (?:current|existing|prior) skepticism [^,]*,\s*", ""),
-            (r"(?i)\bwhile my institutional trust [^,]*,\s*", ""),
-            (r"(?i)\bmy (?:current|existing|prior) (?:view|belief|stance) remains unchanged because\b", "this tweet is not strong enough to justify a change because"),
-            (r"(?i)\bmy (?:current|existing|prior) (?:view|belief|stance) remains unchanged\b", "this tweet is not strong enough to justify a change"),
-            (r"(?i)\bmy (?:current|existing|prior) skepticism remains unchanged because\b", "this tweet is not strong enough to justify a change because"),
-            (r"(?i)\bmy (?:current|existing|prior) skepticism remains unchanged\b", "this tweet is not strong enough to justify a change"),
-            (r"(?i)\bkeeps? my (?:current|existing|prior) skepticism intact\b", "is not enough to justify a change"),
-            (r"(?i)\bdoes(?: not|n't) sufficiently counter my (?:current|existing|prior) skepticism\b", "is not strong enough to overcome the remaining doubt in a specific way"),
-            (r"(?i)\bdoes(?: not|n't) challenge my (?:current|existing|prior) skepticism\b", "does not give a specific enough challenge to justify a change"),
-            (r"(?i)\bmy (?:current|existing|prior) skepticism\b", "the remaining doubt after this tweet"),
-            (r"(?i)\bmy (?:current|existing|prior) (?:view|belief|stance)\b", "the current balance after this tweet"),
-            (r"(?i)\bmy firmly held position\b", "the current balance after this tweet"),
-            (r"(?i)\bmy firmly held belief\b", "the current balance after this tweet"),
-            (r"(?i)\bkeeping my stance at [\'\"]?[^\'\"]+[\'\"]?\b", "keeping the same rating"),
-            (r"(?i)\bkeeps? my view unchanged\b", "is not enough to justify a change"),
-            (r"(?i)\bkeeps? my stance unchanged\b", "is not enough to justify a change"),
-            (r"(?i)\bmy institutional trust in [^,.]* keeps? my view unchanged\b", "the tweet does not provide enough claim-specific force to justify a change"),
-            (r"(?i)\baligns? with my institutional trust\b", "fits the tweet's point"),
-            (r"(?i)\bmy institutional trust\b", "the tweet's pull"),
-            (r"(?i)\blow openness to update\b", "the tweet's limited force"),
-            (r"(?i)\bmy openness to update\b", "the tweet's force"),
-            (r"(?i)\bthe absence of a fact pack to contradict the claim\b", "the lack of a specific counterpoint here"),
-            (r"(?i)\bofficial narratives\b", "the claim as framed here"),
-        ]
-        for pat, rep in repls:
-            s = re.sub(pat, rep, s)
-        
-        s = re.sub(r"(?i)\bthe rating stays the same because\b", "the tweet is not strong enough to justify a change because", s)
-        s = re.sub(r"(?i)\bthe rating stays the same\b", "the tweet is not strong enough to justify a change", s)
-        s = re.sub(r"(?i)\bthe overall balance after this tweet\b", "the current balance after this tweet", s)
-        s = re.sub(r"(?i)\bthe current balance after this tweet remains unchanged\b", "the tweet is not strong enough to justify a change", s)
-        s = re.sub(r"(?i)^while\s+", "", s)
-        if final_rating == 0:
-            s = re.sub(r"(?i)\bi remain at 0\b", "I remain mixed", s)
-        
-        s = re.sub(r"(?i)\bI remain unchanged because\b", "This tweet is not strong enough to justify a change because", s)
-        s = re.sub(r"(?i)\bI remain unchanged\b", "This tweet is not strong enough to justify a change", s)
-        
-        s = re.sub(r"\s+", " ", s).strip(" ,.;:-")
-        s = _sentence_case_cleanup(s)
-        return s
-
-        
     _STEP3_SOFT_WARNING_ONLY_TAGS = {
         "generic_strong_evidence",
         "generic_overwhelming_evidence",
@@ -11133,10 +11677,12 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
     }
 
     def _is_step3_soft_warning_only_meta(meta_text: str | None) -> bool:
+        """Return whether local warnings are soft enough to accept the Step-3 output."""
         m = str(meta_text or "").strip().lower()
         return m in _STEP3_SOFT_WARNING_ONLY_TAGS
 
     def _step3_explanation_on_topic(expl_text: str, tweet_text: str = "") -> bool:
+        """Check whether a Step-3 explanation is grounded in the tweet, claim, or shown material."""
         expl = re.sub(r"\s+", " ", str(expl_text or "")).strip()
         tw = re.sub(r"\s+", " ", str(tweet_text or "")).strip()
         if not expl:
@@ -11158,6 +11704,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return any(m in expl_low and m in tw_low for m in motifs)
 
     def _has_hard_step3_issue(reason_text, warning_list, meta_text) -> bool:
+        """Return whether local validation tags include a hard Step-3 issue."""
         joined = " | ".join([str(reason_text or "")] + [str(w or "") for w in (warning_list or [])] + [str(meta_text or "")]).lower()
         hard_markers = [
             "not_in_allowed_set",
@@ -11174,6 +11721,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return any(tok in joined for tok in hard_markers)
 
     def _has_only_hidden_state_family(reason_text, warning_list, meta_text) -> bool:
+        """Check whether local warnings are limited to hidden-state wording."""
         items = [str(reason_text or "")] + [str(w or "") for w in (warning_list or [])] + [str(meta_text or "")]
         tokens = set()
         for item in items:
@@ -11187,9 +11735,11 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return bool(tokens) and tokens == {"mentions_hidden_state"}
 
     def _soft_accept_hidden_state_family(rating_value, cleaned_text):
+        """Soft-accept outputs whose only defect is acceptable hidden-state phrasing."""
         return _soft_accept_attempt1_text(rating_value, cleaned_text, 'mentions_hidden_state')
 
     def _soft_accept_attempt1_text(rating_value, cleaned_text, meta_text):
+        """Accept a first-attempt Step-3 output when only benign warning tags remain."""
         try:
             rating_i = int(rating_value)
         except Exception:
@@ -11207,6 +11757,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return _format_step3_output_preserve_explanation(final_rating=rating_i, explanation=cleaned_expl)
 
     def _clean_true_open_local_rewrite_explanation(expl_text: str) -> str:
+        """Clean a true-open local rewrite explanation before insertion."""
         s = re.sub(r"\s+", " ", str(expl_text or "")).strip()
         if not s:
             return ""
@@ -11225,6 +11776,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return s
 
     def _rewrite_true_open_meta_to_tweet_local(rating_value, meta_text=None, reason_text=None, warning_list=None):
+        """Rewrite true-open meta explanations into tweet-local explanations."""
         if _normalize_world_mode(WORLD) != 'true_open':
             return ""
         joined = " | ".join(
@@ -11248,6 +11800,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return _rewrite_step3_output_with_explanation(final_rating=rating_i, explanation=local_expl)
 
     def _rewrite_step3_explanation_only_for_polarity(rating_value, explanation_text: str = "") -> str:
+        """Rewrite only the explanation when polarity, not rating, needs repair."""
         try:
             rating_i = int(rating_value)
         except Exception:
@@ -11267,6 +11820,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return rewritten
 
     def _explanation_claim_direction(expl_text: str) -> str:
+        """Classify a local explanation as claim-supporting or claim-opposing."""
         s = re.sub(r"\s+", " ", str(expl_text or "")).strip().lower()
         if not s:
             return "unknown"
@@ -11313,6 +11867,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return "unknown"
 
     def _rating_direction_label(rating_value: int | None) -> str:
+        """Map a local rating to a support/oppose/neutral label."""
         try:
             r = int(rating_value)
         except Exception:
@@ -11324,6 +11879,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return "uncertain"
 
     def _would_semantically_invert(raw_rating: int, raw_expl: str, candidate_text: str, tweet_stance_local: str | None = None) -> bool:
+        """Detect whether a repair would invert the intended semantic direction."""
         raw_dir = _explanation_claim_direction(raw_expl)
         candidate_expl = _extract_explanation_text(candidate_text) or ""
         candidate_dir = _explanation_claim_direction(candidate_expl)
@@ -11338,6 +11894,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return False
 
     def _attempt(prompt_to_use: str, attempt_id):
+        """Run one local LLM attempt and return sanitized text plus validation details."""
         _set_current_validation_context(prompt_to_use)
         _set_native_ollama_debug_context(step='step3', agent_name=agent_name, attempt=attempt_id, label='attempt')
         stateless_retry = str(attempt_id) == '1b'
@@ -11411,6 +11968,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return r, cleaned, raw_text, meta_reason, ok, val_reason, val_warnings
 
     def _compact_step3_rescue_prompt(*, compact: bool = False, fixed_rating: int | None = None, original_explanation: str = "") -> str:
+        """Build the compact local rescue prompt for a failed Step-3 attempt."""
         local_claim = str(claim_txt or "").strip()
         local_tweet = _strip_leaked_prompt_headers(str(tweet_txt or "").strip())
         shown_material = _extract_compact_step3_shown_material(prompt, max_items=(1 if compact else 2), max_chars_per_item=(180 if compact else 240))
@@ -11511,6 +12069,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return "\n".join(str(x) for x in lines if x is not None).strip()
 
     def _native_rescue_attempt(prompt_to_use: str, attempt_id, *, include_history: bool = True, compact: bool = False):
+        """Run a native-Ollama rescue attempt for the current Step-3 failure."""
         _set_current_validation_context(prompt_to_use)
         label_name = 'native_rescue_compact' if compact else 'native_rescue'
         _set_native_ollama_debug_context(step='step3', agent_name=agent_name, attempt=attempt_id, label=label_name)
@@ -11587,6 +12146,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
 
 
     def _log_detection_tags(final_rating, expl):
+        """Record local detection/repair tags for Step-3 diagnostics."""
         # Runs all detectors for analysis only. Never modifies rating or explanation.
         detectors = [
             lambda: _step3_explanation_contradiction_tag_local(int(pre_belief), final_rating, expl, tweet_stance),
@@ -11604,6 +12164,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
                 pass
 
     def _step3_explanation_has_specific_tweet_anchor(expl_text: str, tweet_text_local: str = "") -> bool:
+        """Check whether local explanation cites a specific tweet point."""
         expl = re.sub(r"\s+", " ", str(expl_text or "")).strip()
         tw = re.sub(r"\s+", " ", str(tweet_text_local or "")).strip()
         if not expl or not tw:
@@ -11626,6 +12187,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return False
 
     def _step3_explanation_attacks_tweet_weakness(expl_text: str, tweet_text_local: str = "", tweet_stance_local: str | None = None, final_rating_local=None) -> bool:
+        """Check whether local explanation critiques a weakness in the tweet."""
         expl = re.sub(r"\s+", " ", str(expl_text or "")).strip().lower()
         if not expl:
             return False
@@ -11645,6 +12207,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return False
 
     def _step3_explanation_obvious_fragment_reason(expl_text: str) -> str | None:
+        """Detect broken fragment explanations in local Step-3 output."""
         expl = re.sub(r"\s+", " ", str(expl_text or "")).strip()
         if not expl:
             return None
@@ -11690,6 +12253,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return None
 
     def _step3_debug_audit_tags(final_rating, explanation_text: str, final_text: str = "") -> list[str]:
+        """Build local Step-3 audit tags for accepted or repaired outputs."""
         expl = re.sub(r"\s+", " ", str(explanation_text or "")).strip()
         final_blob = re.sub(r"\s+", " ", str(final_text or "")).strip()
         tags = []
@@ -11782,6 +12346,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return out
 
     def _emit_step3_accepted_audit(final_text: str, raw_first: str = '', raw_second: str = '', *, source: str = 'main'):
+        """Emit local audit metrics after a Step-3 output is accepted."""
         if not DEBUG_NATIVE_THINKING_ON_FAIL:
             return
         rating = _parse_rating(final_text)
@@ -11804,6 +12369,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         )
 
     def _step3_explanation_contradiction_tag_local(pre_value, final_value, explanation_text, tweet_stance_local=None):
+        """Return a local tag when rating and explanation contradict each other."""
         # In free_bounded mode, movement can go toward or away from the speaker/tweet.
         # Broad polarity-rewrite logic caused many false positives. Clear opposite-side-only
         # explanation mismatches are handled later by _step3_explanation_wrong_side_anchor().
@@ -11919,6 +12485,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         stance_note += "\n" + strong_bias_note.strip()
 
     def _finalize_step3_success(out_text, raw_first, raw_second, tags, *, warning_list=None, source="main"):
+        """Finalize a local Step-3 success by formatting output and logging repairs."""
         final_out = str(out_text or '')
         final_raw_second = raw_second
         final_tags = list(tags or [])
@@ -12219,6 +12786,13 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
 
 
 def get_step2_llm_response(conversation, prompt, expected_current_belief, add_to_memory, agent_name: str = None):
+    """
+    Run the full Step-2 speaker tweet-generation pipeline.
+    
+        The function calls the LLM, sanitizes the tweet output, checks rating/stance consistency, performs
+        compact retry or native rescue when needed, records warning tags, caches handoff text, and returns a
+        finalized public tweet payload for the listener.
+    """
     _set_memory_step_kind(conversation, "step2")
     """Step-2 call with at most one cheap fatal-only retry.
 
@@ -12237,6 +12811,12 @@ def get_step2_llm_response(conversation, prompt, expected_current_belief, add_to
     max_attempts = 2  # allow one extra pass only for fatal format failures
 
     def _extract_claim_from_prompt(p: str) -> str:
+        """
+        Extract the active claim from the Step-2 prompt text.
+        
+            The local Step-2 repair code uses this when rebuilding compact retry prompts after malformed tweet
+            generation.
+        """
         if not p:
             return ""
         m = re.search(r"(?im)^\s*CLAIM\s*\(.*?\)\s*:\s*(.+?)\s*$", str(p))
@@ -12247,6 +12827,7 @@ def get_step2_llm_response(conversation, prompt, expected_current_belief, add_to
         return (m.group(1) or "").strip()
 
     def _log_step2_event(event_type: str, attempt: int, reason, raw_text: str, sanitized_text: str, final_text: str = ""):
+        """Record one local Step-2 attempt, warning, or repair event."""
         _dump_retry_debug_event(
             step='step2',
             event_type=event_type,
@@ -12269,6 +12850,7 @@ def get_step2_llm_response(conversation, prompt, expected_current_belief, add_to
     fallback_used = False
 
     def _remember_attempt(attempt_num: int, raw_text_value: str):
+        """Store local Step-2 attempt text for later diagnostics or fallback."""
         nonlocal raw_attempt_1, raw_attempt_2
         if int(attempt_num) <= 1:
             raw_attempt_1 = str(raw_text_value or "")
@@ -12276,9 +12858,11 @@ def get_step2_llm_response(conversation, prompt, expected_current_belief, add_to
             raw_attempt_2 = str(raw_text_value or "")
 
     def _add_warning_tag(attempt_num: int, reason_text: str):
+        """Add one Step-2 warning tag if it is not already present."""
         warning_tags.append(f"attempt_{int(attempt_num)}:{_reason_tag_token(reason_text)}")
 
     def _step2_debug_audit_tags(tweet_text_value: str, current_rating: int) -> list[str]:
+        """Build local Step-2 audit tags for accepted or repaired tweet outputs."""
         tweet_local = re.sub(r"\s+", " ", str(tweet_text_value or "")).strip()
         if not tweet_local:
             return ['accepted_empty_tweet']
@@ -12342,6 +12926,7 @@ def get_step2_llm_response(conversation, prompt, expected_current_belief, add_to
         return out
 
     def _emit_step2_accepted_audit(final_output: str):
+        """Emit Step-2 audit metrics after a tweet output is accepted."""
         if not DEBUG_NATIVE_THINKING_ON_FAIL:
             return final_output
         tweet_local = _strip_leaked_prompt_headers(extract_tweet_text(final_output) or '')
@@ -12353,6 +12938,7 @@ def get_step2_llm_response(conversation, prompt, expected_current_belief, add_to
         return final_output
 
     def _finalize_step2_success(final_output: str, *, contaminated: bool = False, source: str = "main"):
+        """Finalize a valid Step-2 tweet output and update handoff state."""
         _record_step2_success_metrics(source=source, contaminated=contaminated)
         audited_output = _emit_step2_accepted_audit(final_output)
         _log_step2_cue_metric(audited_output)
@@ -12368,6 +12954,7 @@ def get_step2_llm_response(conversation, prompt, expected_current_belief, add_to
         return audited_output
 
     def _native_rescue_step2_attempt(prompt_to_use: str, attempt_id, *, include_history: bool = True):
+        """Run a native-Ollama rescue attempt for the current Step-2 failure."""
         _set_current_validation_context(prompt_to_use)
         _set_native_ollama_debug_context(step='step2', agent_name=agent_name, attempt=attempt_id, label='native_rescue')
         # Use seed+7 so rescue calls don't replay the same degenerate empty-output
@@ -13036,6 +13623,7 @@ def _step3_true_open_point_mismatch_reason(text: str, tweet_text: str = "", prom
 
 
 def _step2_stock_evidence_has_concrete_local_point(text: str) -> bool:
+    """Detect whether stock evidence language is grounded in a concrete local point."""
     s = re.sub(r"\s+", " ", str(text or "")).strip()
     if not s:
         return False
@@ -13576,6 +14164,12 @@ def _extract_claim_from_anchor(text: str) -> str:
 
 
 def _true_open_should_search(tweet_text: str) -> bool:
+    """
+    Decide whether Step-3 should perform a live search in true_open mode.
+    
+        The decision balances the active world mode, configured search budget, tweet content, and whether
+        the interaction contains enough claim-relevant material to justify a web lookup.
+    """
     if not TRUE_OPEN_WEB_ACTIVE:
         return False
     s = re.sub(r"\s+", " ", str(tweet_text or "")).strip()
@@ -13601,6 +14195,7 @@ def _true_open_should_search(tweet_text: str) -> bool:
 
 
 def _true_open_query_hint_phrases(tweet_txt: str, claim_txt: str = "") -> list[str]:
+    """Return search-query hints based on claim and tweet focus."""
     low = re.sub(r"\s+", " ", str(tweet_txt or "")).strip().lower()
     hints = []
     patterns = [
@@ -13634,6 +14229,7 @@ def _true_open_query_hint_phrases(tweet_txt: str, claim_txt: str = "") -> list[s
 
 
 def _true_open_exact_query_focus(tweet_txt: str) -> str:
+    """Build exact query focus text for true-open retrieval."""
     low = re.sub(r"\s+", " ", str(tweet_txt or "")).strip().lower()
     exact_patterns = [
         (r"independent on-site verification|independent onsite verification", "independent on-site verification"),
@@ -13656,6 +14252,7 @@ def _true_open_exact_query_focus(tweet_txt: str) -> str:
 
 
 def _build_true_open_query(claim_txt: str, tweet_txt: str) -> str:
+    """Build the Step-3 live-search query for true_open mode."""
     claim = re.sub(r"\s+", " ", str(claim_txt or "")).strip()
     tweet = re.sub(r"\s+", " ", str(tweet_txt or "")).strip()
     tweet = re.sub(r"(?i)^twee?t:\s*", "", tweet).strip()
@@ -13706,6 +14303,7 @@ def _build_true_open_query(claim_txt: str, tweet_txt: str) -> str:
 
 
 def _true_open_should_search_step2(seed_text: str, current_belief: int | None = None) -> bool:
+    """Decide whether Step-2 should perform live search in true_open mode."""
     if not TRUE_OPEN_WEB_ACTIVE:
         return False
     mode = str(STEP2_WEB_MODE or "off").strip().lower()
@@ -13748,6 +14346,7 @@ def _build_true_open_step2_seed_text(agent, previous_interaction_type: str = "")
 
 
 def _build_true_open_query_step2(claim_txt: str, seed_text: str, current_belief: int | None = None) -> str:
+    """Build the Step-2 live-search query for true_open mode."""
     try:
         belief = int(current_belief)
     except Exception:
@@ -13764,6 +14363,7 @@ def _build_true_open_query_step2(claim_txt: str, seed_text: str, current_belief:
 
 
 def _strip_search_html_text(value: str) -> str:
+    """Strip tags and normalize text extracted from search HTML."""
     s = re.sub(r"<[^>]+>", " ", str(value or ""))
     s = html_lib.unescape(s)
     s = re.sub(r"\s+", " ", s).strip()
@@ -13771,6 +14371,7 @@ def _strip_search_html_text(value: str) -> str:
 
 
 def _normalize_search_result_url(href: str, *, host_hint: str = "") -> str:
+    """Normalize search-result URLs before deduplication and logging."""
     href = re.sub(r"\s+", "", str(href or "")).strip()
     if not href:
         return ""
@@ -13797,6 +14398,7 @@ def _normalize_search_result_url(href: str, *, host_hint: str = "") -> str:
 
 
 def _dedupe_search_items(items: list[dict], fetch_k: int) -> list[dict]:
+    """Remove duplicate search results while preserving order."""
     out = []
     seen = set()
     for item in items:
@@ -13823,6 +14425,7 @@ def _dedupe_search_items(items: list[dict], fetch_k: int) -> list[dict]:
 
 
 def _live_web_search_duckduckgo(query: str, top_k: int = 3) -> list[dict]:
+    """Run a DuckDuckGo HTML search for true_open mode."""
     q = str(query or "").strip()
     if not q:
         return []
@@ -13850,6 +14453,7 @@ def _live_web_search_duckduckgo(query: str, top_k: int = 3) -> list[dict]:
 
 
 def _live_web_search_brave(query: str, top_k: int = 3) -> list[dict]:
+    """Run a Brave search for true_open mode when configured."""
     q = str(query or "").strip()
     if not q:
         return []
@@ -13900,6 +14504,7 @@ def _live_web_search_brave(query: str, top_k: int = 3) -> list[dict]:
 
 
 def _true_open_compact_result_snippet(text: str, max_chars: int = 180) -> str:
+    """Shorten a live-search result snippet for prompt insertion."""
     s = re.sub(r"\s+", " ", str(text or "")).strip()
     if not s:
         return ""
@@ -13915,6 +14520,7 @@ def _true_open_compact_result_snippet(text: str, max_chars: int = 180) -> str:
 
 
 def _true_open_contextual_page_type_penalty(title: str, snippet: str, url: str, tweet_txt: str, focus_flags: dict, hinge_overlap: int) -> int:
+    """Penalize live-search results whose page type is likely unhelpful."""
     title_low = str(title or "").lower()
     snippet_low = str(snippet or "").lower()
     blob_low = f"{title_low} {snippet_low}".strip()
@@ -13951,6 +14557,7 @@ def _true_open_contextual_page_type_penalty(title: str, snippet: str, url: str, 
     return penalty
 
 def _render_notes_context(agent, max_items: int = 3, max_chars: int = 700) -> str:
+    """Render accumulated true-open notes back into prompt context."""
     notes = list(getattr(agent, "true_open_notes", []) or [])[-max(1, int(max_items or 3)):]
     if not notes:
         return ""
@@ -13971,11 +14578,13 @@ def _render_notes_context(agent, max_items: int = 3, max_chars: int = 700) -> st
 
 
 def _combine_shown_material_blocks(*blocks: str) -> str:
+    """Combine RAG, fact-pack, web, and other shown material into one block."""
     parts = [str(b or "").strip() for b in blocks if str(b or "").strip()]
     return "\n\n".join(parts)
 
 
 def _finalize_observable_source_meta(meta: dict) -> dict:
+    """Finalize source metadata fields for a true-open interaction."""
     meta = dict(meta or {})
     used_web = int(bool(meta.get("used_web", 0)))
     used_notes = int(bool(meta.get("used_notes", 0)))
@@ -14050,6 +14659,13 @@ def _mark_prompt_source_meta(meta: dict, *, agent=None, conversation=None, step_
 
 
 def _build_true_open_context(agent, tweet_text: str, previous_interaction_type: str = "", step_kind: str = "step3", current_belief: int | None = None):
+    """
+    Build the complete live-web context block shown in true_open runs.
+    
+        This combines query construction, search execution, result reranking, snippet rendering, source
+        metadata, and per-agent note updates. It is deliberately isolated from local RAG so closed/RAG runs
+        remain reproducible without web access.
+    """
     meta = {
         "tool_sequence": [],
         "planner_mode": PLANNER_MODE,
@@ -14146,6 +14762,7 @@ def _build_true_open_context(agent, tweet_text: str, previous_interaction_type: 
 
 
 def _update_true_open_notes(agent, meta: dict):
+    """Update per-agent notes with observed true-open search results."""
     if agent is None or not TRUE_OPEN_NOTES_ACTIVE or TOOL_MODE != "multi":
         return
     notes = list(getattr(agent, "true_open_notes", []) or [])
@@ -14160,6 +14777,12 @@ def _update_true_open_notes(agent, meta: dict):
 
 
 def _tweet_text_has_usable_step3_content(tweet_text: str) -> bool:
+    """
+    Return whether the listener received real tweet content rather than protocol residue.
+    
+        Missing or malformed Step-2 handoff is treated as a pipeline artifact. Step-3 should then produce a
+        no-change fallback instead of asking the listener to evaluate an empty or meta prompt.
+    """
     s = re.sub(r"\s+", " ", str(tweet_text or "")).strip()
     if not s:
         return False
@@ -14176,15 +14799,12 @@ def _tweet_text_has_usable_step3_content(tweet_text: str) -> bool:
 
 
 def _compute_allowed_ratings(pre_belief: int, speaker_belief: int, max_step_change: int | None, update_mode: str | None = None):
-    """Compute the ALLOWED FINAL_RATING set WITHOUT leaking speaker to the prompt.
-
-    Modes:
-      - assimilation_only: neighborhood(pre, k) ∩ {c: |speaker - c| <= |speaker - pre|}
-      - free_bounded: neighborhood(pre, k), with no speaker-distance filter.
-
-    Notes:
-      - Always includes pre (staying is always allowed).
-      - Values are clamped to [-2, 2].
+    """
+    Compute the legal final ratings for a listener before Step-3 is called.
+    
+        This is the main enforcement point for max_step_change, assimilation_only, and free_bounded update
+        mechanics. Step-3 is instructed to choose only from this set, and validators later reject outputs
+        outside it.
     """
     pre = int(pre_belief)
     spk = int(speaker_belief)
@@ -14220,14 +14840,12 @@ def _compute_allowed_ratings(pre_belief: int, speaker_belief: int, max_step_chan
     return [allowed[0]] + tail_sorted if allowed else [pre]
 
 def _apply_same_side_edge_unlock(pre_belief: int, speaker_belief: int, allowed_ratings, agent=None, unlock_hits: int | None = None, tweet_text: str = ""):
-    """Optionally reopen +2 / -2 after repeated same-side mild hits that did not change the agent.
-
-    Logic:
-      - Only applies for pre=+1 with speaker=+1, or pre=-1 with speaker=-1.
-      - Uses per-agent counters accumulated only when such hits leave the belief unchanged.
-      - Unlock is contextual: the reopened edge is available only on that same-side mild hit,
-        not on intervening neutral/opposite interactions.
-      - Counters reset whenever the agent's belief actually changes.
+    """
+    Optionally expand the allowed set after repeated same-side mild exposures.
+    
+        This experimental mechanism can allow +1 to reach +2 or -1 to reach -2 after enough same-side hits.
+        It is intentionally separate from the normal allowed-set computation so it can be enabled, disabled,
+        or audited independently.
     """
     try:
         pre = int(pre_belief)
@@ -14266,6 +14884,12 @@ def _apply_same_side_edge_unlock(pre_belief: int, speaker_belief: int, allowed_r
 
 
 def _update_same_side_edge_unlock_counters(agent, pre_belief: int, post_belief: int, speaker_belief: int):
+    """
+    Update the counters used by the optional same-side edge-unlock mechanism.
+    
+        Counters track repeated same-side interactions that did not already move the agent. If this feature
+        is enabled, these counters determine when the allowed set may reopen the corresponding edge rating.
+    """
     if _is_free_bounded_update_mode():
         return
     if agent is None:
@@ -14291,6 +14915,13 @@ def _update_same_side_edge_unlock_counters(agent, pre_belief: int, post_belief: 
 
 
 def _choose_step3_singleton_mode(pre_belief: int, speaker_belief: int | None, allowed_ratings, same_rating_mode: str | None = None) -> str:
+    """
+    Decide how to handle Step-3 when only one final rating is legally allowed.
+    
+        Singleton allowed sets can be skipped, summarized with a deterministic explanation, or still sent to
+        the LLM depending on the run configuration. The choice affects speed, artifact rate, and explanation
+        richness but not the legal final rating.
+    """
     try:
         allowed_list = sorted({int(x) for x in (allowed_ratings or [])})
     except Exception:
@@ -14312,6 +14943,7 @@ def _choose_step3_singleton_mode(pre_belief: int, speaker_belief: int | None, al
 
 
 def _singleton_step3_explanation(pre_belief: int, final_rating: int, tweet_txt: str, tweet_stance: str | None, mode: str) -> tuple[str, str]:
+    """Build a deterministic explanation when the allowed-rating set is a singleton."""
     mode = str(mode or "singleton_skip_generic").strip().lower()
     if mode == "same_rating_skip_tweet_local" and _tweet_text_has_usable_step3_content(tweet_txt):
         expl = _step3_tweet_local_explanation(tweet_txt, int(final_rating), int(pre_belief), tweet_stance)
@@ -14322,6 +14954,12 @@ def _singleton_step3_explanation(pre_belief: int, final_rating: int, tweet_txt: 
 
 
 def _build_singleton_step3_output(pre_belief: int, speaker_belief: int | None, allowed_ratings, tweet_txt: str, tweet_stance: str | None = None, same_rating_mode: str | None = None):
+    """
+    Build a protocol-safe Step-3 response when the allowed set has one rating.
+    
+        This avoids unnecessary model calls in cases where the movement rule already fixes the listener's
+        final rating, while still producing an explanation suitable for logs and downstream parsing.
+    """
     try:
         allowed_list = sorted({int(x) for x in (allowed_ratings or [])})
     except Exception:
@@ -14359,6 +14997,7 @@ def _format_allowed_ratings(pre_belief: int, allowed_ratings) -> str:
 
 
 def _step3_anchor_sentences(text: str) -> list[str]:
+    """Return canonical anchor sentences for each final rating."""
     s = re.sub(r"\s+", " ", str(text or "")).strip()
     if not s:
         return []
@@ -14366,6 +15005,7 @@ def _step3_anchor_sentences(text: str) -> list[str]:
     return parts
 
 def _step3_anchor_clean_text(expl_text: str, final_rating: int | None = None) -> str:
+    """Clean an anchor sentence before composing fallback explanations."""
     s = re.sub(r"\s+", " ", str(expl_text or "")).strip()
     if not s:
         return ""
@@ -14412,6 +15052,7 @@ def _step3_anchor_clean_text(expl_text: str, final_rating: int | None = None) ->
     return out
 
 def _step3_generic_anchor_for_rating(final_rating: int, tweet_stance: str | None = None) -> str:
+    """Return a generic rating-aligned anchor when no better local reason is available."""
     try:
         r = int(final_rating)
     except Exception:
@@ -14435,9 +15076,11 @@ def _step3_generic_anchor_for_rating(final_rating: int, tweet_stance: str | None
 
 
 def _fallback_step2(expected_current_belief: int, claim_txt: str) -> str:
-    """Protocol-safe fallback tweet if Step-2 fails repeatedly.
-
-    Keep this short, claim-facing, and non-meta so a fallback does not contaminate later interactions.
+    """
+    Create a deterministic Step-2 tweet when the model cannot produce a valid one.
+    
+        The fallback is intentionally simple and stance-aligned. It preserves run continuity and makes the
+        artifact visible through warning/repair metrics rather than letting malformed text enter Step-3.
     """
     r = int(expected_current_belief)
     claim_short = re.sub(r"\s+", " ", str(claim_txt or "the claim")).strip()
@@ -14485,6 +15128,7 @@ def _render_display_step3_explanation(explanation_text: str, final_rating: int |
 
 
 def _render_display_step3_output(step3_text: str) -> str:
+    """Render final Step-3 output for logs after display-level cleanup."""
     r = extract_belief(step3_text)
     expl = _extract_explanation_text(step3_text)
     if r is None or not expl:
@@ -14496,12 +15140,11 @@ def _render_display_step3_output(step3_text: str) -> str:
 
 
 def _fallback_step3(pre_belief: int, claim_txt: str, tweet_stance: str | None = None, tweet_txt: str = "", invalid_rating: int | None = None) -> str:
-    """Protocol-safe fallback explanation if Step-3 fails repeatedly (keeps the prior rating).
-
-    Use only explicit tweet-local clauses. When the tweet itself contains a clear
-    contrast (but / despite / yet / though), the local fallback preserves that
-    contrast instead of inventing a missing side or collapsing the explanation to
-    a single fragment.
+    """
+    Create a deterministic no-crash Step-3 output when validation/rescue cannot recover.
+    
+        The fallback respects the allowed-rating set and produces a conservative explanation. It is logged
+        as an artifact so analysis can judge whether the run remains interpretable.
     """
     r = int(pre_belief)
     if _tweet_text_has_usable_step3_content(tweet_txt):
@@ -14541,22 +15184,6 @@ def _rewrite_step3_output(final_rating: int, base_text: str, claim_txt: str) -> 
 
 
 
-def get_random_pair(list_agents):
-    """Return two *different* agents from the list."""
-    size = len(list_agents)
-    if size < 2:
-        raise ValueError("Need at least 2 agents to form a pair.")
-
-    idx_i = choice(range(size))
-    idx_j = idx_i
-    while idx_j == idx_i:
-        idx_j = choice(range(size))
-
-    agent_i = list_agents[idx_i]
-    agent_j = list_agents[idx_j]
-    return agent_i, agent_j
-
-
 # <<< CHANGED: added random_seed parameter and use it for shuffling
 def initialize_opinion_distribution(
     num_agents: int,
@@ -14564,7 +15191,12 @@ def initialize_opinion_distribution(
     distribution_type: str = "uniform",
     random_seed: int | None = None,
 ):
-    """Initialize the opinion distribution of the agents."""
+    """
+    Create the initial belief vector for the selected distribution mode.
+    
+        Uniform mode allocates agents evenly across the five belief bins when possible. Other modes support
+        skewed, all-positive/all-negative, and custom count distributions used in hub and baseline tests.
+    """
     max_opinion = max(list_opinion_space)
     min_opinion = min(list_opinion_space)
     multiple = num_agents // 5
@@ -14664,6 +15296,13 @@ def main(
     date_version,
     path_result,
 ):
+    """
+    Run one complete opinion-dynamics experiment and export all result artifacts.
+    
+        The function resolves configuration, initializes prompts/RAG/fact packs/personas/network, builds
+        agents, executes the speaker-listener interaction loop, updates beliefs, records metrics at each
+        step, handles early stopping, and writes the CSV/log outputs consumed by analysis scripts.
+    """
      # Base prompt root: prompts/opinion_dynamics/Flache_2017
     base_prompt_root = os.path.join(prompt_template_root, experiment_id)
     # Version-specific prompt directory, e.g. Flache_2017/v102/v102_confirmation_bias
@@ -14767,6 +15406,7 @@ def main(
     num_agents = len(list_agents)
 
     def to_age_group(age_val):
+        """Map a raw age value to a coarse demographic group for summaries."""
         try:
             a = int(age_val)
         except Exception:
@@ -14783,6 +15423,7 @@ def main(
             return 4
 
     def map_political_to_score(text):
+        """Map a political-leaning label to a numeric ordering for analysis."""
         if not isinstance(text, str):
             return 0
         s = text.strip().lower()
@@ -14809,6 +15450,7 @@ def main(
         return 0
 
     def map_education_to_level(text):
+        """Map an education label to a coarse ordinal level for analysis."""
         if not isinstance(text, str):
             return 2  # mid-point
         s = text.lower()
@@ -16104,6 +16746,7 @@ def main(
 
 
 def post_process_memory(list_agents, path_result, date_version):
+    """Clean memory text before storing or displaying it."""
     for agent in list_agents:
         out_name = os.path.join(
             path_result,
@@ -16135,6 +16778,12 @@ def post_process_memory(list_agents, path_result, date_version):
 
 
 def post_process_tweet(dict_agent_tweet, path_result, date_version, csv_folder):
+    """
+    Clean generated tweet text for public handoff and transcript display.
+    
+        The cleanup removes protocol labels, fences, and obvious meta text while preserving the speaker's
+        substantive stance. It is used after Step-2 validation, not as a substitute for validation.
+    """
     if not os.path.exists(path_result):
         os.makedirs(path_result)
         print("Created a fresh directory!")
@@ -16183,6 +16832,12 @@ def post_process_tweet(dict_agent_tweet, path_result, date_version, csv_folder):
 
 
 def post_process_response(dict_agent_response, path_result, date_version,csv_folder):
+    """
+    Clean listener response text before parsing or display.
+    
+        This normalizes Step-3 formatting artifacts and strips non-content wrappers, while leaving final
+        rating extraction to the dedicated parser so repair/validation decisions remain explicit.
+    """
     if not os.path.exists(path_result):
         os.makedirs(path_result)
         print("Created a fresh directory!")
@@ -16245,6 +16900,7 @@ from typing import Optional
 
 
 def _is_obviously_non_tweet_payload(text: str) -> bool:
+    """Detect outputs that are clearly not public tweet content."""
     s = re.sub(r"\s+", " ", str(text or "")).strip()
     if not s:
         return True
@@ -16315,10 +16971,12 @@ def _extract_protocol_body(text: str, field: str = "TWEET") -> str:
 
 
 def extract_tweet_text(step2_output: str) -> str:
-    """Return only the tweet body from a Step-2 response.
-
-    Fail closed: if the payload still looks like protocol/meta residue, return an empty string
-    instead of trying to salvage it into a listener-visible tweet.
+    """
+    Extract only the public TWEET body from a Step-2 protocol response.
+    
+        The function fails closed: if the candidate still looks like labels, instructions, or other protocol
+        residue, it returns an empty string so the listener path can log a missing-handoff artifact instead
+        of evaluating junk.
     """
     if step2_output is None:
         return ""
@@ -16356,6 +17014,12 @@ def extract_tweet_text(step2_output: str) -> str:
     return body
 
 def extract_belief(reply: str) -> Optional[int]:
+    """
+    Extract the integer FINAL_RATING value from a protocol response.
+    
+        Both Step-2 and Step-3 rely on this parser after sanitation. Invalid or missing values return None
+        so callers can trigger retry, projection, or fallback rather than silently accepting bad output.
+    """
     if not reply:
         return None
 
@@ -16378,6 +17042,12 @@ def extract_belief(reply: str) -> Optional[int]:
     return None
 
 def extract_reasoning(tweet):
+    """
+    Extract the EXPLANATION body from a Step-3 protocol response.
+    
+        This parser intentionally reads only the explanation field. Rating extraction and semantic checks
+        are handled separately so each validation failure can be tagged precisely.
+    """
     if not rating_flag:
         reasoning = tweet.split("\nFinal Answer")[0]
     else:
@@ -16401,9 +17071,6 @@ if __name__ == "__main__":
     path_result = "results/opinion_dynamics/{}/{}".format(experiment_id, model_name_for_path)
     if args.test_run:
         path_result = "results/opinion_dynamics/{}/{}/test_runs".format(experiment_id, model_name_for_path)
-
-    today = date.today()
-    today = today.strftime("%Y%m%d")
     date_version = "20231212"
 
     global rating_flag
@@ -16412,7 +17079,6 @@ if __name__ == "__main__":
     rating_flag = bool(args.no_rating)
 
     LIST_OPINION_SPACE = [-2, -1, 0, 1, 2]
-    x = 1
 
     main(
         num_agents=num_agents,

@@ -1,3 +1,13 @@
+"""Tkinter launcher for running and monitoring LLM opinion-dynamics experiments.
+
+The launcher collects experiment settings, generates persona CSVs when requested,
+builds the corresponding simulation/plotting command, runs it in a subprocess,
+and displays logs and live progress. It intentionally keeps UI state, batch-run
+configuration, persona-profile controls, RAG/web options, and network settings in
+one file so local experiments can be launched without a separate configuration
+front end.
+"""
+
 import os
 # --- UTF-8 safe stdout/stderr on Windows (prevents UnicodeEncodeError) ---
 import sys
@@ -21,6 +31,7 @@ import re
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 
 def strip_ansi(s: str) -> str:
+    """Remove terminal ANSI escape codes before displaying subprocess output in the Tkinter log view."""
     return ANSI_ESCAPE_RE.sub("", s)
 
 
@@ -99,6 +110,7 @@ def _topic_fields_from_state(state: dict) -> list[tuple[str, str, str, str]]:
     return rows
 
 def _persona_state_value(value):
+    """Normalize a persona UI value and treat blank/off as disabled."""
     s = str(value or '').strip()
     if not s or s.lower() == 'off':
         return ''
@@ -106,10 +118,12 @@ def _persona_state_value(value):
 
 
 def _persona_state_label_lines(profile_state: dict | None) -> list[tuple[str, str, str]]:
+    """Convert enabled persona-profile UI state into audit rows for generated persona CSVs."""
     state = dict(profile_state or {})
     rows: list[tuple[str, str, str]] = []
 
     def add(column: str, label: str, key: str, *, enabled: bool = True):
+        """Small local helper used to update the surrounding function state."""
         if not enabled:
             return
         val = _persona_state_value(state.get(key, ''))
@@ -253,7 +267,7 @@ def _strip_internal_persona_audit_lines(persona_lines: list[str]) -> list[str]:
         if any(low.startswith(prefix) for prefix in INTERNAL_PERSONA_AUDIT_LINE_PREFIXES):
             continue
 
-        # Older patches rendered raw importance bullets like "- [high] Trait: value".
+        # Older exporter versions rendered raw importance bullets like "- [high] Trait: value".
         # Natural prompt bullets such as "- Finds ..." are preserved.
         if re.match(r"^[-*]\s*\[(?:high|medium|low)\]\s+", low):
             continue
@@ -317,7 +331,7 @@ def _augment_generated_persona_csv(out_csv_path: str, profile_state: dict | None
             if name:
                 persona_lines.append(f'Name: {name}')
 
-        # Remove any internal/audit rows that may have been added by older UI patches.
+        # Remove any internal/audit rows that may have been added by older UI versions.
         persona_lines = _strip_internal_persona_audit_lines(persona_lines)
 
         # Populate audit columns only. These remain available for metrics/plots.
@@ -507,7 +521,7 @@ DEFAULT_SETTINGS = {
     "ba_hub_custom": "",
     "interaction_selection": "homophily",
     "interaction_homophily_mode": "full",
-"use_personas": False,
+    "use_personas": False,
     "opinion_dist": "uniform",
     "custom_counts": "5,5,5,5,5",
     "names_source": "list_agent_descriptions.csv",
@@ -522,7 +536,7 @@ DEFAULT_SETTINGS = {
     "persona_use_flavor_only": False,
     "persona_topic_mode": "off",
     "persona_topic_causal_profile_choice": "Manual",
-    "persona_topic_profile_choice": "Manual",  # legacy alias for topic-causal profile
+    "persona_topic_profile_choice": "Manual",  # compatibility alias for topic-causal profile
     "persona_flavor_mode": "off",
     "persona_show_profile_label": True,
     "persona_render_style": "structured_card",
@@ -594,6 +608,7 @@ AGE_BINS = [
 # =============================
 
 def _weighted_choice(rng: random.Random, items_with_weights: list[tuple[str, float]]) -> str:
+    """Sample one item according to explicit numeric weights using the supplied deterministic RNG."""
     total = sum(w for _, w in items_with_weights)
     if total <= 0:
         raise ValueError("Weights must sum to > 0.")
@@ -607,6 +622,7 @@ def _weighted_choice(rng: random.Random, items_with_weights: list[tuple[str, flo
 
 
 def _expand_counts_to_list(value_to_count: dict[int, int]) -> list[int]:
+    """Expand a mapping from opinion value to count into a concrete list of initial beliefs."""
     out: list[int] = []
     for v, c in value_to_count.items():
         out.extend([int(v)] * int(c))
@@ -614,6 +630,7 @@ def _expand_counts_to_list(value_to_count: dict[int, int]) -> list[int]:
 
 
 def _build_beliefs(n_agents: int, opinion_strategy: str, custom_counts, rng: random.Random) -> list[int]:
+    """Construct initial belief values for the persona CSV under equal, random, or custom-count strategies."""
     if opinion_strategy == "equal_bins":
         base = n_agents // len(OPINION_VALUES)
         rem = n_agents % len(OPINION_VALUES)
@@ -678,6 +695,7 @@ def _build_opinions_v5_dist(n_agents: int, dist: str, rng: random.Random) -> lis
 # =============================
 
 def age_bin_weights(preset: str) -> list[tuple[str, float]]:
+    """Return age-bin sampling weights for a selected demographic preset."""
     preset = preset.strip().lower()
     bins = [b[0] for b in AGE_BINS]
     if preset in ("equal", "random"):
@@ -696,10 +714,12 @@ def age_bin_weights(preset: str) -> list[tuple[str, float]]:
 
 def uniform_choice(rng: random.Random, items: list[str], preset: str) -> str:
     # currently equal/random are equivalent (uniform draw)
+    """Draw uniformly from a categorical list; the preset argument is retained for API symmetry."""
     return rng.choice(items)
 
 
 def age_from_bin(rng: random.Random, bin_label: str) -> int:
+    """Sample a concrete age from a named age bin."""
     for name, lo, hi in AGE_BINS:
         if name == bin_label:
             return rng.randint(lo, hi)
@@ -709,6 +729,7 @@ def age_from_bin(rng: random.Random, bin_label: str) -> int:
 
 def age_group_from_age(age: int) -> int:
     # matches network_models.py _age_group
+    """Map a concrete age to the age-group index used by network homophily helpers."""
     if age < 18:
         return 0
     elif age <= 25:
@@ -916,6 +937,7 @@ def generate_list_agent_descriptions_csv(
     EPISTEMIC_ORDER = list(EPISTEMIC_ARCHETYPES.keys())
 
     def belief_label(op: int) -> str:
+        """Convert a numeric belief value into the text label stored in persona CSVs."""
         if op <= -2:
             return "Strongly Negative"
         if op == -1:
@@ -928,6 +950,7 @@ def generate_list_agent_descriptions_csv(
 
     # --- Samplers ---
     def sample_political_text() -> str:
+        """Sample one persona/demographic attribute according to the selected preset."""
         preset = (political_preset or "").strip().lower()
         if preset == "none":
             return ""
@@ -948,6 +971,7 @@ def generate_list_agent_descriptions_csv(
         return _weighted_choice(rng, list(zip(POL_TXT, weights)))
 
     def sample_education_text() -> str:
+        """Sample one persona/demographic attribute according to the selected preset."""
         preset = (education_preset or "").strip().lower()
         if preset == "none":
             return ""
@@ -964,6 +988,7 @@ def generate_list_agent_descriptions_csv(
         return _weighted_choice(rng, list(zip(EDU_TXT, weights)))
 
     def sample_gender_text() -> str:
+        """Sample one persona/demographic attribute according to the selected preset."""
         preset = (gender_preset or "").strip().lower()
         if preset == "none":
             return ""
@@ -980,6 +1005,7 @@ def generate_list_agent_descriptions_csv(
         return _weighted_choice(rng, list(zip(GENDER_TXT, weights)))
 
     def sample_ethnicity_text() -> str:
+        """Sample one persona/demographic attribute according to the selected preset."""
         preset = (ethnicity_preset or "").strip().lower()
         if preset == "none":
             return ""
@@ -1015,6 +1041,7 @@ def generate_list_agent_descriptions_csv(
         return rng.choice(ETH_TXT)  # equal/random
 
     def sample_occupation_text() -> str:
+        """Sample one persona/demographic attribute according to the selected preset."""
         preset = (occupation_preset or "").strip().lower()
         if preset == "none":
             return ""
@@ -1050,6 +1077,7 @@ def generate_list_agent_descriptions_csv(
         return rng.choice(OCC_TXT)  # equal/random
 
     def sample_early_life_text() -> str:
+        """Sample one persona/demographic attribute according to the selected preset."""
         preset = (early_life_preset or "").strip().lower()
         if preset == "none":
             return ""
@@ -1071,6 +1099,7 @@ def generate_list_agent_descriptions_csv(
         return rng.choice(EARLY_LIFE_TXT)  # equal/random
 
     def sample_epistemic_profile() -> dict:
+        """Sample one persona/demographic attribute according to the selected preset."""
         preset = (epistemic_profile_preset or "").strip().lower()
         if preset == "none":
             return {}
@@ -1328,20 +1357,25 @@ def _resolve_existing_path(raw_path: str, *, prefer_project_root: bool = False) 
 # =============================
 
 class ProcessRunner:
+    """Run a simulation or plotting command in a background thread and stream output into the UI."""
     def __init__(self, on_output, on_done):
+        """Initialize instance state, widgets, callbacks, and default values."""
         self._proc = None
         self._thread = None
         self._on_output = on_output
         self._on_done = on_done
 
     def is_running(self) -> bool:
+        """Return whether the managed subprocess is currently active."""
         return self._proc is not None and self._proc.poll() is None
 
     def start(self, cmd_list: list[str], cwd: str | None = None):
+        """Start the background process or UI workflow managed by this object."""
         if self.is_running():
             raise RuntimeError("Process already running.")
 
         def run():
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             try:
                 self._on_output(f"\n[CMD] {' '.join(cmd_list)}\n\n")
                 self._proc = subprocess.Popen(
@@ -1370,6 +1404,7 @@ class ProcessRunner:
         self._thread.start()
 
     def stop(self):
+        """Stop the active background process or UI workflow if one is running."""
         if self.is_running():
             self._proc.terminate()
 
@@ -1383,6 +1418,7 @@ class ProcessRunner:
 class AutoScrollbar(ttk.Scrollbar):
     """Scrollbar that hides itself when not needed."""
     def set(self, lo, hi):
+        """Small local helper used to update the surrounding function state."""
         try:
             lo_f = float(lo)
             hi_f = float(hi)
@@ -1407,7 +1443,9 @@ class AutoScrollbar(ttk.Scrollbar):
         super().set(lo, hi)
 
 class LauncherUI(tk.Tk):
+    """Tkinter application that exposes experiment, persona, RAG, network, and plotting controls."""
     def __init__(self):
+        """Initialize instance state, widgets, callbacks, and default values."""
         super().__init__()
         self.title("Opinion Dynamics Launcher")
         self.geometry("1080x820")
@@ -1621,7 +1659,7 @@ class LauncherUI(tk.Tk):
         ttk.Label(cfg_run, text="World:").grid(row=3, column=0, sticky="w", pady=6)
         _world = (self._settings.get("world", "closed") or "closed").strip().lower()
         if _world == "open":
-            _world = "open_no_rag"  # legacy migration
+            _world = "open_no_rag"  # compatibility migration
         if _world not in ["closed", "closed_strict", "closed_strict_rag", "open_no_rag", "open_rag", "true_open"]:
             _world = "closed"
         self.world_var = tk.StringVar(value=_world)
@@ -1731,7 +1769,7 @@ class LauncherUI(tk.Tk):
 
         ttk.Label(cfg_global, text="Model:").grid(row=0, column=0, sticky="w", pady=6)
         self.model_var = tk.StringVar(value=self._settings["model"])
-        # Editable so newly pulled Ollama model tags can be used immediately without patching the launcher.
+        # Editable so newly pulled Ollama model tags can be used immediately without editing the launcher.
         ttk.Combobox(cfg_global, textvariable=self.model_var, values=DEFAULT_MODELS, width=18, state="normal").grid(row=0, column=1, sticky="w", padx=6)
 
         ttk.Label(cfg_global, text="Think mode:").grid(row=0, column=2, sticky="w", padx=(18, 0))
@@ -2135,50 +2173,50 @@ class LauncherUI(tk.Tk):
         self.names_source_var = tk.StringVar(value=self._settings["names_source"])
         ttk.Entry(persona, textvariable=self.names_source_var, width=40).grid(row=2, column=1, sticky="w", padx=6, columnspan=3)
 
-        # Legacy preset controls (hidden when JSON persona mode is active)
-        self.legacy_persona_frame = ttk.LabelFrame(persona, text="Legacy preset controls", padding=8)
-        self.legacy_persona_frame.grid(row=3, column=0, columnspan=4, sticky="we", pady=(8, 0))
+        # Classic preset controls (hidden when JSON persona mode is active)
+        self.classic_persona_frame = ttk.LabelFrame(persona, text="Classic preset controls", padding=8)
+        self.classic_persona_frame.grid(row=3, column=0, columnspan=4, sticky="we", pady=(8, 0))
 
-        ttk.Label(self.legacy_persona_frame, text="Age preset ▼").grid(row=0, column=0, sticky="w", pady=6)
+        ttk.Label(self.classic_persona_frame, text="Age preset ▼").grid(row=0, column=0, sticky="w", pady=6)
         self.age_preset_var = tk.StringVar(value=self._settings["age_preset"])
-        self.age_preset_combo = ttk.Combobox(self.legacy_persona_frame, textvariable=self.age_preset_var,
+        self.age_preset_combo = ttk.Combobox(self.classic_persona_frame, textvariable=self.age_preset_var,
                      values=["none", "equal", "random", "younger", "older", "all_young", "all_old"], width=18, state="readonly")
         self.age_preset_combo.grid(row=0, column=1, sticky="w", padx=6)
 
-        ttk.Label(self.legacy_persona_frame, text="Gender preset ▼").grid(row=0, column=2, sticky="w")
+        ttk.Label(self.classic_persona_frame, text="Gender preset ▼").grid(row=0, column=2, sticky="w")
         self.gender_preset_var = tk.StringVar(value=self._settings["gender_preset"])
-        self.gender_preset_combo = ttk.Combobox(self.legacy_persona_frame, textvariable=self.gender_preset_var,
+        self.gender_preset_combo = ttk.Combobox(self.classic_persona_frame, textvariable=self.gender_preset_var,
                      values=["none", "equal", "random", "more_male", "more_female", "all_male", "all_female"], width=18, state="readonly")
         self.gender_preset_combo.grid(row=0, column=3, sticky="w", padx=6)
 
-        ttk.Label(self.legacy_persona_frame, text="Education preset ▼").grid(row=1, column=0, sticky="w", pady=6)
+        ttk.Label(self.classic_persona_frame, text="Education preset ▼").grid(row=1, column=0, sticky="w", pady=6)
         self.educ_preset_var = tk.StringVar(value=self._settings["educ_preset"])
-        self.educ_preset_combo = ttk.Combobox(self.legacy_persona_frame, textvariable=self.educ_preset_var,
+        self.educ_preset_combo = ttk.Combobox(self.classic_persona_frame, textvariable=self.educ_preset_var,
                      values=["none", "equal", "random", "more_educated", "less_educated", "all_educated", "all_uneducated"], width=18, state="readonly")
         self.educ_preset_combo.grid(row=1, column=1, sticky="w", padx=6)
 
-        ttk.Label(self.legacy_persona_frame, text="Political preset ▼").grid(row=1, column=2, sticky="w")
+        ttk.Label(self.classic_persona_frame, text="Political preset ▼").grid(row=1, column=2, sticky="w")
         self.pol_preset_var = tk.StringVar(value=self._settings["pol_preset"])
-        self.pol_preset_combo = ttk.Combobox(self.legacy_persona_frame, textvariable=self.pol_preset_var,
+        self.pol_preset_combo = ttk.Combobox(self.classic_persona_frame, textvariable=self.pol_preset_var,
                      values=["none", "equal", "random", "centered", "more_right", "most_right", "more_left", "most_left", "all_left", "all_right"], width=18, state="readonly")
         self.pol_preset_combo.grid(row=1, column=3, sticky="w", padx=6)
 
-        ttk.Label(self.legacy_persona_frame, text="Ethnicity preset ▼").grid(row=2, column=0, sticky="w", pady=6)
+        ttk.Label(self.classic_persona_frame, text="Ethnicity preset ▼").grid(row=2, column=0, sticky="w", pady=6)
         self.eth_preset_var = tk.StringVar(value=self._settings["eth_preset"])
-        self.eth_preset_combo = ttk.Combobox(self.legacy_persona_frame, textvariable=self.eth_preset_var,
+        self.eth_preset_combo = ttk.Combobox(self.classic_persona_frame, textvariable=self.eth_preset_var,
                      values=["none","equal","random","all_caucasian","all_black","all_african_american","all_asian","all_asian_american","all_latino","all_hispanic","all_middle_eastern","all_native_american","all_mixed","all_other","more_caucasian","more_black","more_african_american","more_asian","more_asian_american","more_latino","more_hispanic","most_caucasian","most_black","most_african_american","most_asian","most_asian_american","most_latino","most_hispanic"], width=18, state="readonly")
         self.eth_preset_combo.grid(row=2, column=1, sticky="w", padx=6)
 
-        ttk.Label(self.legacy_persona_frame, text="Occupation preset ▼").grid(row=2, column=2, sticky="w")
+        ttk.Label(self.classic_persona_frame, text="Occupation preset ▼").grid(row=2, column=2, sticky="w")
         self.occ_preset_var = tk.StringVar(value=self._settings["occ_preset"])
-        self.occ_preset_combo = ttk.Combobox(self.legacy_persona_frame, textvariable=self.occ_preset_var,
+        self.occ_preset_combo = ttk.Combobox(self.classic_persona_frame, textvariable=self.occ_preset_var,
                      values=["none","equal","random","all_unemployed","all_doctors","all_historians","all_mathematicians","all_computer_engineers","all_politicians","more_doctors","more_historians","more_mathematicians","more_computer_engineers","more_politicians","most_doctors","most_historians","most_mathematicians","most_computer_engineers","most_politicians","more_journalists","more_scientists","more_lawyers","more_economists","more_social_workers"], width=18, state="readonly")
         self.occ_preset_combo.grid(row=2, column=3, sticky="w", padx=6)
 
-        ttk.Label(self.legacy_persona_frame, text="Early life preset ▼").grid(row=3, column=0, sticky="w", pady=6)
+        ttk.Label(self.classic_persona_frame, text="Early life preset ▼").grid(row=3, column=0, sticky="w", pady=6)
         self.early_life_preset_var = tk.StringVar(value=self._settings.get("early_life_preset", "random"))
         self.early_life_preset_combo = ttk.Combobox(
-            self.legacy_persona_frame,
+            self.classic_persona_frame,
             textvariable=self.early_life_preset_var,
             values=["none","random","equal","all_difficult","all_ok","all_good","more_difficult","more_ok","more_good","most_difficult","most_ok","most_good"],
             width=18,
@@ -2186,10 +2224,10 @@ class LauncherUI(tk.Tk):
         )
         self.early_life_preset_combo.grid(row=3, column=1, sticky="w", padx=6)
 
-        ttk.Label(self.legacy_persona_frame, text="Epistemic profile preset ▼").grid(row=3, column=2, sticky="w")
+        ttk.Label(self.classic_persona_frame, text="Epistemic profile preset ▼").grid(row=3, column=2, sticky="w")
         self.epistemic_profile_preset_var = tk.StringVar(value=self._settings.get("epistemic_profile_preset", "none"))
         self.epistemic_profile_preset_combo = ttk.Combobox(
-            self.legacy_persona_frame,
+            self.classic_persona_frame,
             textvariable=self.epistemic_profile_preset_var,
             values=[
                 "none", "random", "equal",
@@ -2206,8 +2244,8 @@ class LauncherUI(tk.Tk):
         self.epistemic_profile_preset_combo.grid(row=3, column=3, sticky="w", padx=6)
 
         try:
-            self.legacy_persona_frame.grid_columnconfigure(1, weight=1)
-            self.legacy_persona_frame.grid_columnconfigure(3, weight=1)
+            self.classic_persona_frame.grid_columnconfigure(1, weight=1)
+            self.classic_persona_frame.grid_columnconfigure(3, weight=1)
         except Exception:
             pass
 
@@ -2484,6 +2522,7 @@ class LauncherUI(tk.Tk):
     # ---- UI helpers ----
 
     def _canvas_can_scroll_y(self, canvas: tk.Canvas) -> bool:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             first, last = canvas.yview()
             return (float(first) > 0.0) or (float(last) < 1.0)
@@ -2491,6 +2530,7 @@ class LauncherUI(tk.Tk):
             return False
 
     def _canvas_can_scroll_x(self, canvas: tk.Canvas) -> bool:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             first, last = canvas.xview()
             return (float(first) > 0.0) or (float(last) < 1.0)
@@ -2498,7 +2538,9 @@ class LauncherUI(tk.Tk):
             return False
 
     def _bind_global_notebook_mousewheel(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         def _on_mousewheel(event):
+            """Handle a Tkinter/UI event and update dependent controls."""
             try:
                 current_tab = self.nb.select()
                 canvas = getattr(self, "_tab_scroll_canvases", {}).get(str(current_tab))
@@ -2514,6 +2556,7 @@ class LauncherUI(tk.Tk):
                 pass
 
         def _on_shift_mousewheel(event):
+            """Handle a Tkinter/UI event and update dependent controls."""
             try:
                 current_tab = self.nb.select()
                 canvas = getattr(self, "_tab_scroll_canvases", {}).get(str(current_tab))
@@ -2539,6 +2582,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _create_scrollable_notebook_tab(self, title: str):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         outer = ttk.Frame(self.nb)
         self.nb.add(outer, text=title)
 
@@ -2558,6 +2602,7 @@ class LauncherUI(tk.Tk):
         window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
 
         def _update_scrollregion(event=None):
+            """Synchronize UI state or derived values after a setting changes."""
             try:
                 bbox = canvas.bbox("all")
                 if bbox:
@@ -2566,6 +2611,7 @@ class LauncherUI(tk.Tk):
                 pass
 
         def _fit_width(event=None):
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             try:
                 canvas.itemconfigure(window_id, width=max(1, canvas.winfo_width()))
             except Exception:
@@ -2587,6 +2633,7 @@ class LauncherUI(tk.Tk):
         return outer, inner
 
     def _on_notebook_tab_changed(self, event=None):
+        """Handle a Tkinter/UI event and update dependent controls."""
         try:
             current_tab = self.nb.select()
             canvas = getattr(self, "_tab_scroll_canvases", {}).get(str(current_tab))
@@ -2597,6 +2644,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _append_seed_waypoint_header(self, seed_label: str, text_index: str):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not hasattr(self, "waypoints_list"):
             return
         try:
@@ -2613,6 +2661,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _append_step_waypoint(self, label: str, text_index: str, changed: bool = False):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not hasattr(self, "waypoints_list"):
             return
         try:
@@ -2643,6 +2692,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _waypoint_marker_for_rating(self, rating: int | None) -> str:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             r = int(rating)
         except Exception:
@@ -2660,6 +2710,7 @@ class LauncherUI(tk.Tk):
         return mapping.get(r, "•")
 
     def _render_step_waypoint_label(self, step_key: str, step_num: str | int | None = None) -> str:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         base_label = getattr(self, "_step_waypoint_label", {}).get(step_key)
         if not base_label:
             base_label = f"Step {step_num}" if step_num is not None else "Step"
@@ -2670,6 +2721,7 @@ class LauncherUI(tk.Tk):
         return f"  {base_label}  {marker_text}"
 
     def _extract_rating_change_destination(self, line_text: str):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         s = str(line_text or "").strip()
         if not s:
             return None
@@ -2754,6 +2806,7 @@ class LauncherUI(tk.Tk):
         return None
 
     def _waypoint_color_for_rating(self, rating: int | None) -> str:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             r = int(rating)
         except Exception:
@@ -2769,6 +2822,7 @@ class LauncherUI(tk.Tk):
         }.get(r, "#cbd5e1")
 
     def _apply_step_waypoint_color(self, step_key: str, list_idx: int | None = None):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             if list_idx is None:
                 list_idx = getattr(self, "_step_waypoint_list_idx", {}).get(step_key)
@@ -2783,6 +2837,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _set_step_waypoint_markers(self, step_num: str | int | None, markers):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if step_num is None:
             return
         step_key = f"step {str(step_num).strip()}".lower()
@@ -2818,6 +2873,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _mark_step_waypoint_changed(self, step_num: str | int | None, destination_rating: int | None = None):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if step_num is None:
             return
         step_key = f"step {str(step_num).strip()}".lower()
@@ -2872,9 +2928,11 @@ class LauncherUI(tk.Tk):
 
 
     def append_log_threadsafe(self, text: str):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         self.after(0, lambda: self._append_log(text))
 
     def _jump_to_waypoint(self, event=None):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not hasattr(self, "waypoints_list"):
             return
         sel = self.waypoints_list.curselection()
@@ -3072,6 +3130,7 @@ class LauncherUI(tk.Tk):
 
     def clear_log(self):
 
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             self.log.configure(state="normal")
         except Exception:
@@ -3272,6 +3331,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _browse_rag_corpus(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         path = filedialog.askopenfilename(
             title="Select retrieval corpus",
             filetypes=[("Data files", "*.json *.jsonl *.csv *.txt *.md"), ("All files", "*.*")],
@@ -3305,6 +3365,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def on_open_log(self):
+        """Handle a Tkinter/UI event and update dependent controls."""
         self.open_log_viewer()
 
         path = filedialog.askopenfilename(
@@ -3511,12 +3572,14 @@ class LauncherUI(tk.Tk):
         self._refresh_log_file_list()
 
     def _browse_log_dir(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         d = filedialog.askdirectory(title="Select network_log_conversation folder")
         if d:
             self._log_dir_var.set(d)
             self._refresh_log_file_list()
 
     def _refresh_log_file_list(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not hasattr(self, "_log_tree"):
             return
 
@@ -3546,6 +3609,7 @@ class LauncherUI(tk.Tk):
             )
 
     def _sort_logs(self, col: str):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not hasattr(self, "_log_tree"):
             return
         items = [(self._log_tree.set(k, col), k) for k in self._log_tree.get_children("")]
@@ -3554,6 +3618,7 @@ class LauncherUI(tk.Tk):
             self._log_tree.move(k, "", i)
 
     def _open_selected_log_file(self, event=None):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not hasattr(self, "_log_tree"):
             return
         sel = self._log_tree.selection()
@@ -3590,10 +3655,12 @@ class LauncherUI(tk.Tk):
         in_prompt_block = False
 
         def is_sep(s: str) -> bool:
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             ss = s.strip()
             return bool(ss) and set(ss) <= set("-_=•*")
 
         def is_output_marker(low: str) -> bool:
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             return (
                 low.startswith("final_rating")
                 or low.startswith("tweet:")
@@ -3603,6 +3670,7 @@ class LauncherUI(tk.Tk):
 
         def is_prompt_header(low: str) -> bool:
             # Headings / scaffold markers that should flip prompt mode ON
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             return (
                 low.startswith("critical clarification")
                 or low.startswith("general behavior rules")
@@ -3633,6 +3701,7 @@ class LauncherUI(tk.Tk):
 
         def is_prompt_line(low: str) -> bool:
             # Lines that are typically part of instruction blocks
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             return (
                 low.startswith("do not ")
                 or low.startswith("you must ")
@@ -3689,10 +3758,12 @@ class LauncherUI(tk.Tk):
             pass
 
     def _sort_logs(self, col: str):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         pass
     
     
     def _update_light_memory_threshold_state(self):
+        """Synchronize UI state or derived values after a setting changes."""
         mem = (getattr(self, "memory_var", tk.StringVar(value="enabled")).get() or "enabled").strip().lower()
         enabled = (mem == "light")
         try:
@@ -3705,6 +3776,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _normalize_allowed_update_mode_ui(self) -> str:
+        """Normalize user-provided or file-derived text into the form expected downstream."""
         mode = (getattr(self, "allowed_update_mode_var", tk.StringVar(value="assimilation_only")).get() or "assimilation_only").strip().lower()
         if mode == "free_brounded":
             mode = "free_bounded"
@@ -3713,6 +3785,7 @@ class LauncherUI(tk.Tk):
         return mode
 
     def _update_allowed_update_controls_state(self):
+        """Synchronize UI state or derived values after a setting changes."""
         mode = self._normalize_allowed_update_mode_ui()
         free_mode = (mode == "free_bounded")
         try:
@@ -3763,6 +3836,7 @@ class LauncherUI(tk.Tk):
                 pass
 
     def _collect_settings(self) -> dict:
+        """Collect related UI values or data rows into a structured object."""
         return {
             "script": self.script_var.get().strip(),
             "seed": self.seed_var.get().strip(),
@@ -3924,21 +3998,25 @@ class LauncherUI(tk.Tk):
         }
 
     def _persona_config_dir(self) -> Path:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         return CONFIG_DIR
 
     def _ensure_persona_json_files(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         schema_path, profiles_path = ensure_config_files(self._persona_config_dir())
         self.persona_schema_path_var.set(str(schema_path))
         self.persona_profiles_path_var.set(str(profiles_path))
         return schema_path, profiles_path
 
     def _load_persona_json_runtime(self):
+        """Load persisted data from disk and return a safe in-memory representation."""
         self._ensure_persona_json_files()
         self._persona_schema_payload = load_schema(self._persona_config_dir())
         self._persona_profiles_payload = load_profiles(self._persona_config_dir())
         return self._persona_schema_payload, self._persona_profiles_payload
 
     def _refresh_profile_choices(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         _schema, profiles = self._load_persona_json_runtime()
         choices = list_profile_choices(profiles)
         try:
@@ -3952,6 +4030,7 @@ class LauncherUI(tk.Tk):
             self.persona_selected_profile_var.set(choices[0])
 
     def _values_with_off(self, values):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         out = []
         for v in ["off", *list(values or [])]:
             if v not in out:
@@ -3959,22 +4038,26 @@ class LauncherUI(tk.Tk):
         return out
 
     def _active_topic_root(self) -> str:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             return topic_version_root(self.prompt_version_var.get())
         except Exception:
             return "generic"
 
     def _active_topic_fields(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             return get_topic_fields(self.prompt_version_var.get())
         except Exception:
             return get_topic_fields("generic")
 
     def _active_topic_slot_mapping(self) -> dict:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         fields = self._active_topic_fields()
         return {TOPIC_SLOT_KEYS[i]: fields[i] for i in range(min(len(TOPIC_SLOT_KEYS), len(fields)))}
 
     def _active_topic_specific_state_from_slots(self) -> tuple[dict, dict, dict]:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         fields = self._active_topic_fields()
         values, labels, importance = {}, {}, {}
         for slot_key, meta in zip(TOPIC_SLOT_KEYS, fields):
@@ -3987,6 +4070,7 @@ class LauncherUI(tk.Tk):
         return values, labels, importance
 
     def _refresh_topic_profile_choices(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         root = self._active_topic_root()
         choices = topic_profile_names(root)
         try:
@@ -3998,6 +4082,7 @@ class LauncherUI(tk.Tk):
             self.persona_topic_causal_profile_choice_var.set(TOPIC_PROFILE_MANUAL)
 
     def _apply_topic_causal_profile_choice(self, *_args):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         root = self._active_topic_root()
         choice = self.persona_topic_causal_profile_choice_var.get().strip() or TOPIC_PROFILE_MANUAL
         values = get_topic_profile(root, choice)
@@ -4020,9 +4105,11 @@ class LauncherUI(tk.Tk):
 
     # Backward-compatible alias used by older traces/settings.
     def _apply_topic_profile_choice(self, *_args):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         return self._apply_topic_causal_profile_choice(*_args)
 
     def _refresh_topic_persona_fields(self, *_args):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         fields = self._active_topic_fields()
         fieldset = get_topic_fieldset(self.prompt_version_var.get())
         try:
@@ -4056,6 +4143,7 @@ class LauncherUI(tk.Tk):
         self._update_json_persona_preview()
 
     def _local_persona_preset_catalog(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         return {
             "Institutionally trusting pragmatist": {
                 "institutional_trust": "high", "uncertainty_tolerance": "medium", "evidence_style": "concrete_first",
@@ -4144,6 +4232,7 @@ class LauncherUI(tk.Tk):
         }
 
     def _preset_profile_choice_values(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         names = list(self._local_persona_preset_catalog().keys())
         for n in preset_profile_names():
             if n not in names:
@@ -4153,24 +4242,27 @@ class LauncherUI(tk.Tk):
         return names
 
     def _set_widget_state_safe(self, widget, state):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             widget.configure(state=state)
         except Exception:
             pass
 
-    def _update_legacy_persona_controls_state(self):
+    def _update_classic_persona_controls_state(self):
+        """Show classic preset controls only when JSON persona-profile generation is disabled."""
         try:
             use_json = bool(getattr(self, "use_json_persona_profiles_var", tk.BooleanVar(value=False)).get())
-            if not hasattr(self, "legacy_persona_frame"):
+            if not hasattr(self, "classic_persona_frame"):
                 return
             if use_json:
-                self.legacy_persona_frame.grid_remove()
+                self.classic_persona_frame.grid_remove()
             else:
-                self.legacy_persona_frame.grid()
+                self.classic_persona_frame.grid()
         except Exception:
             pass
 
     def _apply_core_preset_choice(self, *_args):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         choice = (getattr(self, "persona_profile_label_choice_var", tk.StringVar(value="")).get() or "").strip()
         if not choice:
             return
@@ -4215,6 +4307,7 @@ class LauncherUI(tk.Tk):
         self._update_json_persona_preview()
 
     def _update_json_profile_controls_state(self, *_args):
+        """Synchronize UI state or derived values after a setting changes."""
         mode = (getattr(self, "persona_profile_distribution_mode_var", tk.StringVar(value="all")).get() or "all").strip().lower()
         locked = mode in {"random", "equal"}
         try:
@@ -4232,9 +4325,10 @@ class LauncherUI(tk.Tk):
         for w in widgets:
             state = "disabled" if locked else getattr(w, "_enabled_state", "normal")
             self._set_widget_state_safe(w, state)
-        self._update_legacy_persona_controls_state()
+        self._update_classic_persona_controls_state()
 
     def _fill_json_profile_widgets(self, ui_state: dict, preserve_choice: bool = False):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         label = str(ui_state.get('epistemic_profile_label', '') or '')
         preset_names = set(preset_profile_names())
         if not preserve_choice:
@@ -4302,6 +4396,7 @@ class LauncherUI(tk.Tk):
         self._update_json_persona_preview()
 
     def _apply_selected_profile(self, *_args):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         self._load_persona_json_runtime()
         pid = extract_profile_id(self.persona_selected_profile_var.get())
         profile = get_profile_by_id(self._persona_profiles_payload, pid)
@@ -4310,6 +4405,7 @@ class LauncherUI(tk.Tk):
         self._fill_json_profile_widgets(profile_to_ui_state(profile))
 
     def _collect_json_profile_state(self) -> dict:
+        """Collect related UI values or data rows into a structured object."""
         profile_choice = self.persona_profile_label_choice_var.get().strip()
         custom_label = self.persona_custom_profile_label_var.get().strip()
         effective_label = custom_label if profile_choice == 'Custom' else profile_choice
@@ -4374,12 +4470,14 @@ class LauncherUI(tk.Tk):
         }
 
     def _collect_json_profile_prompt_state(self) -> dict:
+        """Collect related UI values or data rows into a structured object."""
         state = dict(self._collect_json_profile_state())
         # Keep topic notes visible/editable in the UI, but do not inject them into prompts.
         state['custom_topic_notes'] = ''
         return state
 
     def _save_current_json_profile(self):
+        """Save a generated table, setting, or figure to disk with project naming conventions."""
         try:
             self._load_persona_json_runtime()
             profile = build_profile_from_ui(self._collect_json_profile_state())
@@ -4394,6 +4492,7 @@ class LauncherUI(tk.Tk):
             messagebox.showerror("Persona profiles", str(e))
 
     def _update_json_persona_preview(self):
+        """Synchronize UI state or derived values after a setting changes."""
         try:
             profile = build_profile_from_ui(self._collect_json_profile_state())
             preview = render_profile_preview(profile)
@@ -4431,6 +4530,7 @@ class LauncherUI(tk.Tk):
                 pass
 
     def _build_json_persona_section(self, parent):
+        """Build a derived object, command, path, or UI component used by the local pipeline."""
         box = ttk.LabelFrame(parent, text="JSON persona profiles (new system)", padding=12)
         box.pack(fill='x', pady=(10,0))
 
@@ -4450,7 +4550,7 @@ class LauncherUI(tk.Tk):
         self.persona_use_flavor_only_var = tk.BooleanVar(value=bool(self._settings.get('persona_use_flavor_only', False)))
         self.persona_topic_mode_var = tk.StringVar(value=self._settings.get('persona_topic_mode', 'off'))
         self.persona_topic_causal_profile_choice_var = tk.StringVar(value=self._settings.get('persona_topic_causal_profile_choice', self._settings.get('persona_topic_profile_choice', TOPIC_PROFILE_MANUAL)))
-        self.persona_topic_profile_choice_var = self.persona_topic_causal_profile_choice_var  # legacy alias
+        self.persona_topic_profile_choice_var = self.persona_topic_causal_profile_choice_var  # compatibility alias
         self.persona_flavor_mode_var = tk.StringVar(value=self._settings.get('persona_flavor_mode', 'off'))
         self.persona_show_profile_label_var = tk.BooleanVar(value=bool(self._settings.get('persona_show_profile_label', True)))
         self.persona_render_style_var = tk.StringVar(value=self._settings.get('persona_render_style', 'structured_card'))
@@ -4490,7 +4590,7 @@ class LauncherUI(tk.Tk):
         self.persona_flavor_manual_override_var = tk.BooleanVar(value=bool(self._settings.get('persona_flavor_manual_override', False)))
         self._persona_auto_apply_in_progress = False
 
-        ttk.Checkbutton(box, text='Use JSON persona profiles for CSV generation', variable=self.use_json_persona_profiles_var, command=self._update_legacy_persona_controls_state).grid(row=0, column=0, columnspan=4, sticky='w')
+        ttk.Checkbutton(box, text='Use JSON persona profiles for CSV generation', variable=self.use_json_persona_profiles_var, command=self._update_classic_persona_controls_state).grid(row=0, column=0, columnspan=4, sticky='w')
         ttk.Label(box, text='Schema path:').grid(row=1, column=0, sticky='w', pady=4)
         ttk.Entry(box, textvariable=self.persona_schema_path_var, width=72, state='readonly').grid(row=1, column=1, columnspan=3, sticky='we', padx=6)
         ttk.Label(box, text='Profiles path:').grid(row=2, column=0, sticky='w', pady=4)
@@ -4825,18 +4925,20 @@ class LauncherUI(tk.Tk):
         else:
             self._apply_core_preset_choice()
         self._update_json_profile_controls_state()
-        self._update_legacy_persona_controls_state()
+        self._update_classic_persona_controls_state()
         self.after(10, self._apply_live_persona_generation)
 
 
 
     def _safe_get_setting(self, key: str, default=""):
+        """Return a sanitized value that is safe for paths, logs, or UI display."""
         try:
             return self._settings.get(key, default)
         except Exception:
             return default
 
     def _derive_persona_distributions(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         trust = (self.persona_institutional_trust_var.get() or "medium").strip().lower()
         update = (self.persona_openness_to_update_var.get() or "medium").strip().lower()
         suspicion = (self.persona_official_narrative_suspicion_var.get() or "medium").strip().lower()
@@ -4855,7 +4957,7 @@ class LauncherUI(tk.Tk):
         # used by the launcher while preserving a sizable unspecified bucket.
         ethnicity = {"unspecified": 0.22, "caucasian": 0.38, "hispanic": 0.17, "black": 0.12, "asian": 0.07, "mixed": 0.03, "other": 0.01}
         education = {"high_school": 0.18, "some_college": 0.22, "bachelor": 0.26, "master": 0.22, "phd": 0.12}
-        # Wider than the legacy launcher list because topic-causal profiles can
+        # Wider than the classic launcher list because topic-causal profiles can
         # make specialized role lenses more plausible. These are suggestions for
         # generated persona CSVs only; they do not constrain the simulation.
         occupation = {
@@ -4873,14 +4975,17 @@ class LauncherUI(tk.Tk):
         prior_exposure = {"low": 0.40, "medium": 0.40, "high": 0.20}
 
         def adjust(weights, key, delta):
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             if key in weights:
                 weights[key] = max(0.01, weights[key] + delta)
 
         def adjust_many(weights, pairs):
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             for key, delta in pairs:
                 adjust(weights, key, delta)
 
         def active(v):
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             return v not in {"", "off", None}
 
         if active(update):
@@ -4977,12 +5082,15 @@ class LauncherUI(tk.Tk):
                 topic_causal_values, topic_causal_labels = {}, {}
 
         def tval(key, default=''):
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             return str(topic_causal_values.get(key, default) or '').strip().lower().replace('-', '_')
 
         def is_high(key):
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             return tval(key) in {'high', 'very_high', 'computational'}
 
         def is_low(key):
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             return tval(key) in {'low', 'very_low', 'physicalist'}
 
         # v130 simulation hypothesis: computational/anthropic/testability traits
@@ -5155,6 +5263,7 @@ class LauncherUI(tk.Tk):
                 adjust_many(occupation, [('teacher', 0.020), ('manager', 0.020), ('scientist', 0.020)])
 
         def normalize(weights):
+            """Normalize user-provided or file-derived text into the form expected downstream."""
             total = sum(max(v, 0.01) for v in weights.values())
             if total <= 0:
                 n = len(weights)
@@ -5191,10 +5300,12 @@ class LauncherUI(tk.Tk):
         }
 
     def _top_distribution_labels(self, weights: dict, top_n: int = 3):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         items = sorted((weights or {}).items(), key=lambda kv: (-float(kv[1]), kv[0]))[:top_n]
         return ", ".join(f"{k} {v:.0f}%" for k, v in items) if items else ""
 
     def _persona_live_rng(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         rng = getattr(self, '_persona_rng', None)
         if rng is None:
             rng = random.Random(time.time_ns())
@@ -5202,6 +5313,7 @@ class LauncherUI(tk.Tk):
         return rng
 
     def _sample_percent_label(self, weights: dict):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         items = [(str(k), max(0.0, float(v))) for k, v in (weights or {}).items()]
         total = sum(w for _, w in items)
         if total <= 0 or not items:
@@ -5216,6 +5328,7 @@ class LauncherUI(tk.Tk):
         return items[-1][0]
 
     def _sample_weighted_option(self, options):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         items = [(str(k), max(0.0, float(v))) for k, v in (options or [])]
         total = sum(w for _, w in items)
         if total <= 0 or not items:
@@ -5230,6 +5343,7 @@ class LauncherUI(tk.Tk):
         return items[-1][0]
 
     def _topic_generated_fields(self, d, topic_text):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         snap = d.get('core_snapshot', {})
         evidence = snap.get('evidence', 'mixed')
         trust = snap.get('trust', 'medium')
@@ -5259,6 +5373,7 @@ class LauncherUI(tk.Tk):
         return out
 
     def _flavor_generated_fields(self, d, flavor_text):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         age_pick = self._sample_percent_label(d.get('age', {})) or (max(d.get('age', {}).items(), key=lambda kv: kv[1])[0] if d.get('age') else '')
         pol_pick = self._sample_percent_label(d.get('politics', {})) or (max(d.get('politics', {}).items(), key=lambda kv: kv[1])[0] if d.get('politics') else '')
         lines = [ln.strip() for ln in flavor_text.splitlines() if ln.strip()]
@@ -5279,6 +5394,7 @@ class LauncherUI(tk.Tk):
         }
 
     def _suggest_topic_and_flavor(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         d = self._derive_persona_distributions()
         snap = d.get("core_snapshot", {})
         trust = snap.get("trust", "medium")
@@ -5378,6 +5494,7 @@ class LauncherUI(tk.Tk):
         return "\n".join(topic_lines), "\n".join(flavor_lines), d
 
     def _apply_live_persona_generation(self, *_args):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not hasattr(self, 'persona_preview_text'):
             return
         topic_text, flavor_text, d = self._suggest_topic_and_flavor()
@@ -5433,12 +5550,14 @@ class LauncherUI(tk.Tk):
         self._update_json_persona_preview()
 
     def _mark_topic_manual_override(self, *_args):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if getattr(self, '_persona_auto_apply_in_progress', False):
             return
         if hasattr(self, 'persona_topic_manual_override_var'):
             self.persona_topic_manual_override_var.set(True)
 
     def _mark_topic_causal_manual_override(self, *_args):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if getattr(self, '_persona_auto_apply_in_progress', False):
             return
         if hasattr(self, 'persona_topic_causal_manual_override_var'):
@@ -5448,16 +5567,19 @@ class LauncherUI(tk.Tk):
                 pass
 
     def _mark_flavor_manual_override(self, *_args):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if getattr(self, '_persona_auto_apply_in_progress', False):
             return
         if hasattr(self, 'persona_flavor_manual_override_var'):
             self.persona_flavor_manual_override_var.set(True)
 
     def _reset_topic_causal_to_profile(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         self.persona_topic_causal_manual_override_var.set(False)
         self._apply_topic_causal_profile_choice()
 
     def _reset_topic_to_generated(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         self.persona_topic_manual_override_var.set(False)
         self._persona_auto_apply_in_progress = True
         try:
@@ -5470,6 +5592,7 @@ class LauncherUI(tk.Tk):
         self._apply_live_persona_generation()
 
     def _reset_flavor_to_generated(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         self.persona_flavor_manual_override_var.set(False)
         self._persona_auto_apply_in_progress = True
         try:
@@ -5483,6 +5606,7 @@ class LauncherUI(tk.Tk):
 
 
     def _on_close(self):
+        """Handle a Tkinter/UI event and update dependent controls."""
         save_settings(self._collect_settings())
         self.destroy()
 
@@ -5491,6 +5615,7 @@ class LauncherUI(tk.Tk):
     # ---- Command building ----
 
     def build_command(self, seed_override: int | None = None, out_override: str | None = None) -> list[str]:
+        """Build the command-line invocation for the selected simulation or plotting script from UI state."""
         script_raw = self.script_var.get().strip()
         if not script_raw:
             raise ValueError("No script selected.")
@@ -5545,6 +5670,7 @@ class LauncherUI(tk.Tk):
             script_text = ""
 
         def _supports(flag: str) -> bool:
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             return flag.lower() in script_text
 
         think_mode = (getattr(self, "think_mode_var", tk.StringVar(value="off")).get() or "off").strip().lower()
@@ -5659,7 +5785,7 @@ class LauncherUI(tk.Tk):
 # World mode (if supported by the script)
         world = (getattr(self, "world_var", tk.StringVar(value="closed")).get() or "closed").strip().lower()
         if world == "open":
-            world = "open_no_rag"  # legacy alias
+            world = "open_no_rag"  # compatibility alias
         allowed_worlds = {"closed", "closed_strict", "closed_strict_rag", "open_no_rag", "open_rag", "true_open"}
         if world not in allowed_worlds:
             raise ValueError("World must be one of: closed, closed_strict, closed_strict_rag, open_no_rag, open_rag, true_open.")
@@ -5764,7 +5890,7 @@ class LauncherUI(tk.Tk):
         if mem == "light" and _supports("--light_memory_threshold"):
             cmd += ["--light_memory_threshold", str(light_threshold_i)]
 
-        # Trace / logging verbosity (patched scripts)
+        # Trace / logging verbosity (scripts that expose these flags)
         trace_raw = (getattr(self, "trace_var", tk.StringVar(value="auto")).get() or "auto").strip().lower()
         if trace_raw not in {"auto", "minimal", "full", "off"}:
             trace_raw = "auto"
@@ -5774,7 +5900,7 @@ class LauncherUI(tk.Tk):
         if _supports("--trace"):
             cmd += ["--trace", trace_eff]
 
-        # LLM history injection into the prompt (patched scripts)
+        # LLM history injection into the prompt (scripts that expose these flags)
         llm_hist_raw = (getattr(self, "llm_history_var", tk.StringVar(value="off")).get() or "off").strip().lower()
         if llm_hist_raw not in {"off", "auto", "on"}:
             llm_hist_raw = "off"
@@ -5989,6 +6115,7 @@ class LauncherUI(tk.Tk):
     # ---- Multiple runs helpers ----
 
     def _normalize_multi_run_mode(self) -> str:
+        """Normalize user-provided or file-derived text into the form expected downstream."""
         raw = (getattr(self, "multi_run_mode_var", tk.StringVar(value="off")).get() or "off").strip().lower()
         if raw in {"same seed", "same_seed", "same"}:
             return "same_seed"
@@ -6042,6 +6169,7 @@ class LauncherUI(tk.Tk):
         self.runner.start(cmd_list=cmd, cwd=str(PROJECT_ROOT))
 
     def on_run(self):
+        """Handle a Tkinter/UI event and update dependent controls."""
         if self.runner.is_running():
             messagebox.showinfo("Running", "A process is already running.")
             return
@@ -6268,6 +6396,7 @@ class LauncherUI(tk.Tk):
         self._live_schedule_poll()
 
     def _live_opinion_color(self, rating: int | None) -> str:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             r = int(rating)
         except Exception:
@@ -6282,6 +6411,7 @@ class LauncherUI(tk.Tk):
         return mapping.get(r, "#d1d5db")
 
     def _live_network_selected(self) -> bool:
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             net_type = (self.network_type_var.get() or "").strip().lower()
         except Exception:
@@ -6289,6 +6419,7 @@ class LauncherUI(tk.Tk):
         return net_type not in {"", "none", "no_network", "no network"}
 
     def _update_live_network_toggle_visibility(self):
+        """Synchronize UI state or derived values after a setting changes."""
         btn = getattr(self, "_live_view_btn", None)
         if btn is None:
             return
@@ -6316,6 +6447,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _update_live_view_button_text(self):
+        """Synchronize UI state or derived values after a setting changes."""
         btn = getattr(self, "_live_view_btn", None)
         if btn is None:
             return
@@ -6326,6 +6458,7 @@ class LauncherUI(tk.Tk):
         btn.configure(text="Show distribution" if mode == "network" else "Show network")
 
     def _live_toggle_view(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not self._live_network_selected():
             return
         try:
@@ -6359,6 +6492,7 @@ class LauncherUI(tk.Tk):
             self._live_init_plot()
 
     def _live_current_network_signature(self, agent_count: int):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             net_type = (self.network_type_var.get() or "ws").strip().lower()
             hom = bool(self.network_homophily_var.get())
@@ -6380,6 +6514,7 @@ class LauncherUI(tk.Tk):
 
 
     def _live_ba_hub_priority_nodes(self, strategy: str, custom_text: str, opinions, agent_count: int, seed: int):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         strategy = str(strategy or "default").strip().lower()
         if strategy == "default":
             return []
@@ -6450,6 +6585,7 @@ class LauncherUI(tk.Tk):
         return selected
 
     def _live_build_network_if_needed(self, agent_count: int):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not getattr(self, "_live_import_ok", False):
             return False
         if not self._live_network_selected():
@@ -6527,7 +6663,7 @@ class LauncherUI(tk.Tk):
                     neighbors = self._live_build_barabasi_albert(**kwargs)
                 except TypeError:
                     # Compatibility with an older network_models.py. The graph still draws,
-                    # but BA target-group assignment requires the patched network_models.py.
+                    # but BA target-group assignment requires network_models support for target-group assignment.
                     neighbors = self._live_build_barabasi_albert(
                         num_agents=int(agent_count),
                         m_attach=int(sig[5]),
@@ -6563,6 +6699,7 @@ class LauncherUI(tk.Tk):
             return False
 
     def _live_draw_distribution_placeholder(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         self._live_ax.clear()
         xs = [-2, -1, 0, 1, 2]
         # Keep the distribution view plain and neutral.
@@ -6581,6 +6718,7 @@ class LauncherUI(tk.Tk):
         )
 
     def _live_draw_network_placeholder(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         self._live_ax.clear()
         self._live_ax.set_title("Network view (no data yet)")
         self._live_ax.text(
@@ -6594,6 +6732,7 @@ class LauncherUI(tk.Tk):
         self._live_ax.set_axis_off()
 
     def _live_init_plot(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not getattr(self, "_live_import_ok", False):
             return
         mode = str(getattr(self, "_live_view_mode", tk.StringVar(value="distribution")).get())
@@ -6607,6 +6746,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _live_browse_attach(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         path = filedialog.askopenfilename(
             title="Attach opinion-change CSV (network_opinion_change_*.csv)",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
@@ -6616,6 +6756,7 @@ class LauncherUI(tk.Tk):
 
     def _live_detach(self):
         # keep history, but stop reading from file
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             if self._live_poll_job is not None:
                 self.after_cancel(self._live_poll_job)
@@ -6639,6 +6780,7 @@ class LauncherUI(tk.Tk):
 
     def _live_on_follow_toggle(self):
         # If user turns follow on, jump to latest immediately.
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             if bool(self._live_follow_var.get()):
                 self._live_go_live()
@@ -6646,6 +6788,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _live_go_live(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             self._live_follow_var.set(True)
         except Exception:
@@ -6662,6 +6805,7 @@ class LauncherUI(tk.Tk):
 
     def _live_schedule_poll(self):
         # Polling is light: reads only newly appended lines.
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             if self._live_poll_job is not None:
                 return
@@ -6670,6 +6814,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _live_poll(self):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         self._live_poll_job = None
 
         # Reschedule early so UI stays responsive even if parsing is slow.
@@ -6727,6 +6872,7 @@ class LauncherUI(tk.Tk):
             self._live_update_plot(last_idx)
 
     def _live_attach(self, csv_path: str):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not csv_path:
             return
 
@@ -6860,6 +7006,7 @@ class LauncherUI(tk.Tk):
 
     def _live_counts_to_bdp(self, counts):
         # counts: [-2,-1,0,1,2]
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         N = float(sum(counts)) if counts else 0.0
         if N <= 0:
             return 0.0, 0.0, 0.0
@@ -6872,6 +7019,7 @@ class LauncherUI(tk.Tk):
         return ex, D, P
 
     def _live_step_by(self, delta: int):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not getattr(self, "_live_counts", None):
             return
         try:
@@ -6888,6 +7036,7 @@ class LauncherUI(tk.Tk):
 
     def _live_keyboard_step(self, delta: int, event=None):
         # Avoid hijacking arrows while typing in text/entry widgets.
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             w = self.focus_get()
             cls = str(w.winfo_class()).lower() if w is not None else ""
@@ -6899,6 +7048,7 @@ class LauncherUI(tk.Tk):
 
     def _live_on_slider(self):
         # User interaction => stop following unless they explicitly Go live.
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         try:
             self._live_follow_var.set(False)
         except Exception:
@@ -6911,6 +7061,7 @@ class LauncherUI(tk.Tk):
         self._live_update_plot(idx)
 
     def _live_update_plot(self, idx: int):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not getattr(self, "_live_import_ok", False):
             return
         if not self._live_counts:
@@ -6962,6 +7113,7 @@ class LauncherUI(tk.Tk):
             pass
 
     def _live_update_network_plot(self, idx: int):
+        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         if not self._live_vectors:
             self._live_draw_network_placeholder()
             try:
@@ -7009,6 +7161,7 @@ class LauncherUI(tk.Tk):
         hub_assignment_mode = str(getattr(self, "_live_ba_hub_assignment_mode", "early_position") or "early_position")
 
         def _live_scale_node_size(d: int) -> float:
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             if dmax <= dmin:
                 return 720.0 if net_type == "ba" else 560.0
             if net_type == "ba":
@@ -7113,6 +7266,7 @@ class LauncherUI(tk.Tk):
 
     def on_stop(self):
         # Stop current run and cancel any pending batch queue.
+        """Handle a Tkinter/UI event and update dependent controls."""
         self._batch_queue = []
         self._batch_active = False
         self._batch_total = 0
@@ -7124,7 +7278,9 @@ class LauncherUI(tk.Tk):
 
 
     def on_process_done(self, return_code):
+        """Handle a Tkinter/UI event and update dependent controls."""
         def finish():
+            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
             self._append_log(f"\n[DONE] Return code: {return_code}\n")
 
             # Continue batch if active and there are queued runs.
