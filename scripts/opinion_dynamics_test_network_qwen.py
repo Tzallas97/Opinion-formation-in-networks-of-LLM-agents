@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 from prompts.opinion_dynamics.Flache_2017.content.fact_packs import FACT_PACKS
 from prompts.opinion_dynamics.Flache_2017.content.world_rules import WORLD_RULES as EXTERNAL_WORLD_RULES, WORLD_LABELS
 from network_models import build_small_world, build_erdos_renyi, build_barabasi_albert, choose_partner_scoring
+import run_naming  # shared mode-abbreviation + run-stem naming
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -54,6 +55,7 @@ CURRENT_INTERACTION_STEP = None   # set each loop iteration to (t+1) in main()
 
 # Run-level metrics used for quick diagnostics.
 RUN_METRICS = Counter()
+RUN_OUTPUT_DIR = None  # set in main(); used by the atexit metrics dump
 
 
 
@@ -69,6 +71,74 @@ def _metric_inc(key: str, n: int = 1):
         RUN_METRICS[str(key)] += int(n)
     except Exception:
         pass
+
+
+def _dump_run_metrics_json():
+    """Write run-level RUN_METRICS counters to <output_dir>/metrics_<run>.json.
+
+    Registered via atexit so it fires once at process end. Writes a NEW file
+    only; it never touches existing result CSVs and never raises.
+    """
+    try:
+        out_dir = globals().get('RUN_OUTPUT_DIR')
+        if not out_dir:
+            return
+        run_id = globals().get('RUN_EXPORT_ID') or 'run'
+        import os as _os, json as _json
+        path = _os.path.join(out_dir, f"metrics_{run_id}.json")
+        # forced holds = interactions where the listener did not genuinely evaluate
+        # (pipeline artifact / skipped step3). Counted in the main loop as holds_total.
+        _holds = int(RUN_METRICS.get("holds_total", 0))
+        _levents = int(RUN_METRICS.get("listener_events_total", 0))
+        # Self-document the methodology knobs so a result is always attributable to its
+        # regime (validation strictness, update mode, ...) and never an invisible confound.
+        try:
+            _cfg = {
+                "validation_strictness": globals().get("VALIDATION_STRICTNESS"),
+                "allowed_update_mode": globals().get("ALLOWED_UPDATE_MODE"),
+                "wrong_side_explanation_requery": globals().get("WRONG_SIDE_EXPL_REQUERY"),
+                "deterministic": globals().get("DETERMINISTIC"),
+                "model_name": str(getattr(args, "model_name", "")),
+                "version_set": str(getattr(args, "version_set", "")),
+                "world": str(getattr(args, "world", "")),
+                "network_type": str(getattr(args, "network_type", "")),
+                "num_agents": int(getattr(args, "num_agents", 0) or 0),
+                "num_steps": int(getattr(args, "num_steps", 0) or 0),
+                "max_step_change": getattr(args, "max_step_change", None),
+                "distribution": str(getattr(args, "distribution", "")),
+                "seed": getattr(args, "seed", None),
+                # decoding regime (temperature etc. are experimental conditions too)
+                "temperature": getattr(args, "temperature", None),
+                "top_p": getattr(args, "top_p", None),
+                "top_k": getattr(args, "top_k", None),
+                "structured_output": globals().get("STRUCTURED_OUTPUT"),
+                "rag_backend": str(getattr(args, "rag_backend", "")),
+                "rag_content_mode": str(getattr(args, "rag_content_mode", "")),
+                "rag_top_k": getattr(args, "rag_top_k", None),
+                "fact_pack_mode": str(getattr(args, "fact_pack_mode", "")),
+                "think_mode": str(getattr(args, "think_mode", "")),
+            }
+        except Exception:
+            _cfg = {}
+        data = {"run": run_id,
+                "config": _cfg,
+                "summary": {"forced_holds": _holds, "listener_events": _levents,
+                            "held_fraction": round(_holds / _levents, 4) if _levents else 0.0,
+                            "closed_world_leak_step2": int(RUN_METRICS.get("closed_world_leak_step2", 0)),
+                            "closed_world_leak_step3": int(RUN_METRICS.get("closed_world_leak_step3", 0)),
+                            "closed_world_leak_fraction": round((int(RUN_METRICS.get("closed_world_leak_step2", 0)) + int(RUN_METRICS.get("closed_world_leak_step3", 0))) / (2 * _levents), 4) if _levents else 0.0},
+                "metrics": dict(sorted(RUN_METRICS.items()))}
+        with open(path, "w", encoding="utf-8") as fh:
+            _json.dump(data, fh, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+try:
+    import atexit as _atexit
+    _atexit.register(_dump_run_metrics_json)
+except Exception:
+    pass
 
 
 def _metric_inc_transition(pre_value: int, post_value: int, prefix: str = "transition"):
@@ -573,7 +643,7 @@ def _ensure_rag_retrieval_log_file():
                     'run_id',
                     'time_step','prompt_step','prompt_variant','agent_name','version_set','topic_key',
                     'query_mode','content_mode','effective_top_k','query_text',
-                    'retrieved_ids','retrieved_directions','rendered_sections','retrieved_texts'
+                    'retrieved_ids','retrieved_directions','rendered_sections','retrieved_texts','retriever'
                 ])
         return RAG_RETRIEVAL_LOG_CSV_PATH
     except Exception:
@@ -644,6 +714,7 @@ def _log_rag_retrieval(step_kind: str, prompt_variant: str, agent_name: str, que
                 directions,
                 sections,
                 ' || '.join(str(r.get('text','')).replace('\n',' ').strip() for r in (rows or [])),
+                str(getattr(args, 'rag_backend', '') or ''),
             ])
     except Exception:
         pass
@@ -1003,7 +1074,7 @@ def _agent_persona_fields(agent, prefix: str = "") -> dict:
     fields = [
         'epistemic_profile', 'institutional_trust', 'uncertainty_tolerance',
         'evidence_style', 'official_narrative_suspicion', 'openness_to_update',
-        'value_orientation', 'social_conformity', 'agency_vs_fatalism', 'conflict_style',
+        'value_orientation', 'agency_vs_fatalism', 'conflict_style',  # social_conformity retired (was inert: never produced a validator permission)
         'age', 'gender', 'ethnicity', 'education', 'occupation',
         'political_leaning', 'early_life',
         # New structured persona-profile fields from the launcher. Keep these
@@ -1418,7 +1489,7 @@ def _persona_value_norm(value) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().lower()
 
 
-def _compile_persona_validation_policy(*, epistemic_profile="", institutional_trust="", uncertainty_tolerance="", evidence_style="", official_narrative_suspicion="", openness_to_update="", value_orientation="", social_conformity="", agency_vs_fatalism="", conflict_style="") -> dict:
+def _compile_persona_validation_policy(*, epistemic_profile="", institutional_trust="", uncertainty_tolerance="", evidence_style="", official_narrative_suspicion="", openness_to_update="", value_orientation="", agency_vs_fatalism="", conflict_style="") -> dict:
     """
     Translate persona traits into permissions used by output validators.
     
@@ -1433,11 +1504,10 @@ def _compile_persona_validation_policy(*, epistemic_profile="", institutional_tr
     suspicion = _persona_value_norm(official_narrative_suspicion)
     openness = _persona_value_norm(openness_to_update)
     value_orient = _persona_value_norm(value_orientation)
-    conformity = _persona_value_norm(social_conformity)
     agency = _persona_value_norm(agency_vs_fatalism)
     conflict = _persona_value_norm(conflict_style)
 
-    active = any([profile, trust, uncertainty, evidence, suspicion, openness, value_orient, conformity, agency, conflict])
+    active = any([profile, trust, uncertainty, evidence, suspicion, openness, value_orient, agency, conflict])
     low_trust = trust in {"low", "very low"}
     high_trust = trust in {"high", "very high"}
     high_suspicion = suspicion in {"high", "very high"}
@@ -1462,7 +1532,6 @@ def _compile_persona_validation_policy(*, epistemic_profile="", institutional_tr
         "official_narrative_suspicion": suspicion,
         "openness_to_update": openness,
         "value_orientation": value_orient,
-        "social_conformity": conformity,
         "agency_vs_fatalism": agency,
         "conflict_style": conflict,
         "allow_distrust_language": allow_distrust,
@@ -2126,6 +2195,38 @@ def _set_wrapper_prompt_control_think_override(conversation, prompt_text: str):
         return lambda: None
 
 
+# Per-model capability registry. The simulation engine is model-agnostic; only this thin
+# layer differs per model. Capability is PER-MODEL, not per-family (qwen3 thinks, qwen2.5
+# does not; a future reasoning-llama would think). Onboard a model by adding an entry whose
+# KEY is a substring of its tag. Unknown models return has_thinking=None (unrestricted), so
+# expansion never wrongly blocks a capable model.
+MODEL_PROFILES = {
+    "qwen3": {"has_thinking": True, "chat_path": "native"},
+    "qwq": {"has_thinking": True, "chat_path": "native"},
+    "deepseek-r1": {"has_thinking": True, "chat_path": "native"},
+    # Add explicit no-thinking models you use so their Think mode is correctly disabled, e.g.:
+    # "qwen2.5": {"has_thinking": False, "chat_path": "wrapper"},
+    # "llama3":  {"has_thinking": False, "chat_path": "wrapper"},
+}
+_UNKNOWN_PROFILE = {"has_thinking": None, "chat_path": "wrapper"}
+
+
+def _model_profile(model_name: str) -> dict:
+    """Look up a model tag in MODEL_PROFILES (longest matching key wins). Unknown models get
+    a permissive profile (has_thinking=None) and are never restricted."""
+    m = str(model_name or "").strip().lower()
+    best = None
+    for key, prof in MODEL_PROFILES.items():
+        if key in m and (best is None or len(key) > len(best[0])):
+            best = (key, prof)
+    return best[1] if best else _UNKNOWN_PROFILE
+
+
+def _model_has_thinking(model_name: str):
+    """True (known-thinking), False (known-no-thinking), or None (unknown -> unrestricted)."""
+    return _model_profile(model_name).get("has_thinking")
+
+
 def _is_qwen_family_model(model_name: str) -> bool:
     """Return whether a model name belongs to the qwen model family."""
     model = str(model_name or "").strip().lower()
@@ -2196,9 +2297,10 @@ def _boost_qwen_num_predict_on_length(options: dict, step: str = "") -> dict:
         bump = 96
         boosted = floor if current_i <= 0 else min(max(current_i + bump, floor), ceiling)
     elif step_norm == "step3":
-        ceiling = max(floor, floor + 96)
-        bump = 64
-        boosted = floor if current_i <= 0 else min(max(current_i + bump, floor), ceiling)
+        # step3 keeps thinking on every call; a length-truncation empty means the reasoning used
+        # the whole budget before the final lines. A tiny +64 bump cannot help, so give step3 real
+        # room (~8k) so the thinking plus FINAL_RATING/EXPLANATION both fit, without disabling think.
+        boosted = max(int(floor), 8192)
     else:
         ceiling = max(floor, floor + 128)
         bump = 96
@@ -2382,7 +2484,7 @@ def _load_simple_rag_corpus(path: str) -> list[dict]:
                     obj = json.loads(line)
                     txt = obj.get("text") or obj.get("chunk") or obj.get("content") or obj.get("snippet") or ""
                     row = {"id": obj.get("id") or f"{p.stem}_{i}", "text": str(txt or "").strip()}
-                    for meta_key in ["label", "direction", "polarity", "type", "category", "tags", "topic", "topic_key", "topic_id", "topic_name", "version", "version_key"]:
+                    for meta_key in ["label", "direction", "polarity", "type", "category", "tags", "topic", "topic_key", "topic_id", "topic_name", "version", "version_key", "entities"]:
                         if meta_key in obj:
                             row[meta_key] = obj.get(meta_key)
                     if row["text"]:
@@ -2396,7 +2498,7 @@ def _load_simple_rag_corpus(path: str) -> list[dict]:
                     if isinstance(item, dict):
                         txt = item.get("text") or item.get("chunk") or item.get("content") or item.get("snippet") or ""
                         row = {"id": item.get("id") or f"{p.stem}_{i}", "text": str(txt or "").strip()}
-                        for meta_key in ["label", "direction", "polarity", "type", "category", "tags", "topic", "topic_key", "topic_id", "topic_name", "version", "version_key"]:
+                        for meta_key in ["label", "direction", "polarity", "type", "category", "tags", "topic", "topic_key", "topic_id", "topic_name", "version", "version_key", "entities"]:
                             if meta_key in item:
                                 row[meta_key] = item.get(meta_key)
                         if row["text"]:
@@ -2418,7 +2520,7 @@ def _load_simple_rag_corpus(path: str) -> list[dict]:
                 for i, row in enumerate(reader, start=1):
                     txt = row.get(preferred, "")
                     out_row = {"id": row.get("id") or f"{p.stem}_{i}", "text": str(txt or "").strip()}
-                    for meta_key in ["label", "direction", "polarity", "type", "category", "tags", "topic", "topic_key", "topic_id", "topic_name", "version", "version_key"]:
+                    for meta_key in ["label", "direction", "polarity", "type", "category", "tags", "topic", "topic_key", "topic_id", "topic_name", "version", "version_key", "entities"]:
                         if meta_key in row:
                             out_row[meta_key] = row.get(meta_key)
                     if out_row["text"]:
@@ -2899,6 +3001,81 @@ def _maybe_init_rag_corpus() -> list[dict]:
         return []
     return _load_simple_rag_corpus(path)
 
+_RAG_ARCH_STATE = {"retrievers": None, "alias_map": None, "checked": False}
+
+
+def _rag_architecture_backend() -> str:
+    """Return 'dense'/'graph' when an architecture retrieval backend is selected, else ''."""
+    b = str(getattr(args, "rag_backend", "off")).strip().lower()
+    return b if b in ("dense", "graph") else ""
+
+
+def _init_rag_architecture():
+    """
+    Fail-fast setup for the dense/graph retrieval backends.
+
+        Imports tools/retrievers, loads the entity alias map (graph) and pre-embeds the corpus
+        (dense) at startup, so a missing sidecar or a down Ollama aborts the run before any agent
+        steps instead of failing mid-simulation. No-op for off/simple.
+    """
+    backend = _rag_architecture_backend()
+    if not backend or _RAG_ARCH_STATE["checked"]:
+        return
+    _RAG_ARCH_STATE["checked"] = True
+    tools_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    try:
+        import retrievers as _retr
+    except Exception as e:
+        raise SystemExit(f"[config] rag_backend={backend} needs tools/retrievers.py: {e}")
+    _RAG_ARCH_STATE["retrievers"] = _retr
+    corpus_path = str(getattr(args, "rag_corpus_path", "") or "").strip()
+    stem = os.path.splitext(corpus_path)[0]
+    if not RAG_CORPUS:
+        raise SystemExit(f"[config] rag_backend={backend}: empty/missing corpus at {corpus_path!r}")
+    if backend == "graph":
+        import json as _json
+        gpath = stem + ".graph.json"
+        if not os.path.exists(gpath):
+            raise SystemExit(f"[config] rag_backend=graph needs the alias map next to the corpus: {gpath}")
+        gdata = _json.load(open(gpath, encoding="utf-8"))
+        _RAG_ARCH_STATE["alias_map"] = {e: [a.lower() for a in v.get("aliases", [])]
+                                        for e, v in gdata.get("entities", {}).items()}
+        if not any(r.get("entities") for r in RAG_CORPUS):
+            raise SystemExit("[config] rag_backend=graph: corpus rows carry no 'entities' tags")
+    if backend == "dense":
+        try:
+            _retr.dense_rank("warmup query", RAG_CORPUS, k=1,
+                             model=str(getattr(args, "rag_embed_model", "nomic-embed-text")),
+                             cache_path=stem + ".embcache.json")
+        except Exception as e:
+            raise SystemExit(f"[config] rag_backend=dense could not embed the corpus (is Ollama up? "
+                             f"pulled {getattr(args, 'rag_embed_model', 'nomic-embed-text')!r}?): {e}")
+    print(f"[config] rag_backend={backend} ready (architecture retrieval, corpus={os.path.basename(corpus_path)})")
+
+
+def _retrieve_architecture_chunks(query: str, corpus: list[dict], top_k: int, backend: str) -> list[dict]:
+    """
+    Top-k retrieval via the dense or graph architecture, returning raw corpus rows.
+
+        Order is preserved as ranked (graph: path order, seed outward), so the prompt renders a
+        coherent chain. Pure top-k by design: content-mode quotas do not apply to the architecture
+        conditions - direction balance is a property of the corpus (multihop spec rule 6).
+    """
+    _init_rag_architecture()
+    _retr = _RAG_ARCH_STATE["retrievers"]
+    stem = os.path.splitext(str(getattr(args, "rag_corpus_path", "") or "").strip())[0]
+    if backend == "graph":
+        ids = _retr.graph_rank(query, corpus, _RAG_ARCH_STATE["alias_map"] or {}, k=int(top_k))
+    else:
+        ids = _retr.dense_rank(query, corpus, k=int(top_k),
+                               model=str(getattr(args, "rag_embed_model", "nomic-embed-text")),
+                               cache_path=stem + ".embcache.json")
+    by_id = {str(r.get("id", "")): r for r in corpus}
+    return [by_id[i] for i in ids if i in by_id]
+
+
 def _rag_context_for_interaction(tweet_text: str = "", step_kind: str = "step3", agent_name: str = "", prompt_variant: str = "", prompt_text: str = "") -> str:
     """
     Build and log the retrieved context for one Step-2 or Step-3 interaction.
@@ -2909,7 +3086,8 @@ def _rag_context_for_interaction(tweet_text: str = "", step_kind: str = "step3",
     """
     if not _rag_enabled_for_world(getattr(args, "world", "closed")):
         return ""
-    if str(getattr(args, "rag_backend", "off")).strip().lower() != "simple":
+    _rag_active_backend = str(getattr(args, "rag_backend", "off")).strip().lower()
+    if _rag_active_backend not in ("simple", "dense", "graph"):
         return ""
     if not RAG_CORPUS:
         return ""
@@ -2929,15 +3107,23 @@ def _rag_context_for_interaction(tweet_text: str = "", step_kind: str = "step3",
         getattr(args, 'rag_top_k', 4),
         content_mode=rag_content_mode,
     )
-    rows = _retrieve_simple_chunks(
-        query=query,
-        corpus=filtered_corpus,
-        top_k=effective_top_k,
-        content_mode=rag_content_mode,
-        agent_name=agent_name,
-        step_kind=step_kind,
-        topic_key=topic_key,
-    )
+    if _rag_active_backend in ("dense", "graph"):
+        rows = _retrieve_architecture_chunks(
+            query=query,
+            corpus=filtered_corpus,
+            top_k=effective_top_k,
+            backend=_rag_active_backend,
+        )
+    else:
+        rows = _retrieve_simple_chunks(
+            query=query,
+            corpus=filtered_corpus,
+            top_k=effective_top_k,
+            content_mode=rag_content_mode,
+            agent_name=agent_name,
+            step_kind=step_kind,
+            topic_key=topic_key,
+        )
     _log_rag_retrieval(
         step_kind=step_kind,
         prompt_variant=prompt_variant,
@@ -3304,9 +3490,29 @@ parser.add_argument(
 parser.add_argument(
     "--rag_backend",
     default="off",
-    choices=["off", "simple"],
+    choices=["off", "simple", "dense", "graph"],
     type=str,
-    help="Retrieval backend. 'simple' = lexical overlap retrieval from a local corpus.",
+    help=("Retrieval backend. 'simple' = lexical overlap; 'dense' = embedding cosine "
+          "(Ollama, cached); 'graph' = entity-graph chain retrieval (needs <corpus>.graph.json). "
+          "dense/graph are experimental retrieval-architecture conditions (tools/retrievers.py); they use pure "
+          "top-k - content-mode quotas do not apply."),
+)
+parser.add_argument(
+    "--rag_embed_model",
+    default="nomic-embed-text",
+    type=str,
+    help="Embedding model for rag_backend=dense (Ollama). Vectors cached next to the corpus.",
+)
+parser.add_argument(
+    "--solo_check",
+    default="off",
+    choices=["off", "on"],
+    type=str,
+    help=("Solo model check (formerly opinion_dynamics_v3_check.py): NO personas, NO network, NO "
+          "interactions - each 'agent' is an independent sample of the model answering "
+          "step1_report.md about the claim. Measures the model's own prior on the topic - the "
+          "baseline for cross-model comparisons. Uses the SAME native inference path and decoding options as normal runs, so "
+          "solo numbers are directly comparable to run numbers. Ignores network/RAG settings."),
 )
 parser.add_argument(
     "--rag_corpus_path",
@@ -3494,6 +3700,48 @@ parser.add_argument(
          "free_bounded allows one bounded step in either direction within max_step_change; "
          "same-rating interactions can also change. free_brounded is accepted as a typo alias.",
 )
+parser.add_argument(
+    "--validation_strictness",
+    default="strict",
+    choices=["strict", "warn_only", "format_only"],
+    type=str,
+    help="How hard the content validators enforce. strict = current behaviour (content retries in Step-2 and "
+         "content rejections in Step-3). warn_only / format_only turn OFF content enforcement so the model's own "
+         "wording stands; FINAL_RATING format and the allowed-ratings / max-step-change rules are always enforced. "
+         "Use non-strict to compare different models without the filters homogenising their outputs.",
+)
+parser.add_argument(
+    "--wrong_side_explanation_requery",
+    default="off",
+    choices=["off", "on"],
+    type=str,
+    help="When on, a Step-3 explanation whose side contradicts the (already valid) FINAL_RATING triggers ONE "
+         "explanation-only re-query with the rating held fixed (no rating guard runs). Closed-world guarded; if the "
+         "re-query is still wrong-side, a fragment, or adds outside evidence, the deterministic rewrite is used. "
+         "Explanations are transcript-only, so this does not change B/D/P; it only makes wrong-side transcripts genuine.",
+)
+parser.add_argument(
+    "--structured_output",
+    choices=["off", "on"],
+    default="off",
+    help=(
+        "Experimental guardrail: when on, step2/step3 native calls request grammar-constrained "
+        "JSON from Ollama (format=json) and the reply is converted back to the canonical "
+        "FINAL_RATING/TWEET|EXPLANATION text before any parsing. The model can then only emit "
+        "valid structure, so post-hoc format repairs (and their selection bias) shrink. "
+        "Default off; treat as an experimental condition. May reduce thinking-token usage on "
+        "thinking models because format constraints apply to the whole output."
+    ),
+)
+parser.add_argument(
+    "--deterministic",
+    default="off",
+    choices=["off", "on"],
+    type=str,
+    help="When on, forces greedy decoding (temperature 0, top_k 1) for all native LLM calls, overriding the "
+         "per-step temperatures. With a fixed seed this makes runs reproducible, so an A/B difference reflects "
+         "the variable under test rather than sampling noise.",
+)
 
 parser.add_argument(
     "--same_side_edge_unlock_hits",
@@ -3583,11 +3831,97 @@ parser.add_argument(
 parser.add_argument("-test", "--test_run", action="store_true", help="Set flag if test run")
 parser.add_argument("--no_rating", action="store_true", help="Set flag if prompt is no rating")
 parser.add_argument(
-    "-out", "--out", "--output_file", type=str, default="test1.csv", help="Name of the output file"
+    "-out", "--out", "--output_file", dest="output_file", type=str, default="test1.csv", help="Name of the output file"
 )
 args = parser.parse_args()
 DEFAULT_MAX_STEP_CHANGE = args.max_step_change
 ALLOWED_UPDATE_MODE = str(getattr(args, "allowed_update_mode", "assimilation_only") or "assimilation_only").strip().lower()
+VALIDATION_STRICTNESS = str(getattr(args, "validation_strictness", "strict") or "strict").strip().lower()
+if VALIDATION_STRICTNESS not in {"strict", "warn_only", "format_only"}:
+    VALIDATION_STRICTNESS = "strict"
+
+
+def _content_enforcement_enabled() -> bool:
+    """True only in 'strict' mode. When False (warn_only / format_only), content
+    validators return a clean result, so they neither retry Step-2 nor reject
+    Step-3. Format checks and the allowed-ratings / max-step-change rules are
+    always enforced regardless of this setting."""
+    return str(globals().get("VALIDATION_STRICTNESS", "strict") or "strict").strip().lower() == "strict"
+
+WRONG_SIDE_EXPL_REQUERY = str(getattr(args, "wrong_side_explanation_requery", "off") or "off").strip().lower()
+if WRONG_SIDE_EXPL_REQUERY not in {"off", "on"}:
+    WRONG_SIDE_EXPL_REQUERY = "off"
+
+
+def _wrong_side_explanation_requery_enabled() -> bool:
+    """True when the optional 1-shot explanation-only re-query is enabled. It never
+    changes the rating (rating stays fixed); it only replaces a wrong-side explanation
+    with a genuine model explanation, closed-world guarded."""
+    return str(globals().get("WRONG_SIDE_EXPL_REQUERY", "off") or "off").strip().lower() == "on"
+
+DETERMINISTIC = str(getattr(args, "deterministic", "off") or "off").strip().lower()
+if DETERMINISTIC not in {"off", "on"}:
+    DETERMINISTIC = "off"
+STRUCTURED_OUTPUT = str(getattr(args, "structured_output", "off") or "off").strip().lower()
+if STRUCTURED_OUTPUT not in {"off", "on"}:
+    STRUCTURED_OUTPUT = "off"
+
+
+def _structured_output_enabled() -> bool:
+    """Return whether step2/step3 native calls should use JSON-constrained output."""
+    return STRUCTURED_OUTPUT == "on"
+
+
+def _structured_json_to_canonical(raw_text: str, step: str):
+    """Convert a structured JSON reply back to the canonical text format.
+
+    step2 expects {"final_rating": int, "tweet": str}       -> FINAL_RATING/TWEET text
+    step3 expects {"final_rating": int, "explanation": str} -> FINAL_RATING/EXPLANATION text
+    Returns None (caller keeps the raw text) when parsing fails, and counts the failure
+    so structured-output reliability is measurable per run.
+    """
+    import json as _json
+    import re as _re
+    s = str(raw_text or "").strip()
+    if not s:
+        return None
+    s = _re.sub(r"^```(?:json)?\s*|\s*```$", "", s).strip()   # tolerate code fences
+    try:
+        obj = _json.loads(s)
+    except Exception:
+        try:
+            m = _re.search(r"\{.*\}", s, _re.S)
+            obj = _json.loads(m.group(0)) if m else None
+        except Exception:
+            obj = None
+    if not isinstance(obj, dict):
+        try:
+            RUN_METRICS["structured_output_parse_fail_total"] += 1
+        except Exception:
+            pass
+        return None
+    rating = obj.get("final_rating", obj.get("rating"))
+    body_key = "tweet" if str(step).strip().lower() == "step2" else "explanation"
+    body = obj.get(body_key) or obj.get("text") or ""
+    try:
+        rating = int(rating)
+    except Exception:
+        try:
+            RUN_METRICS["structured_output_parse_fail_total"] += 1
+        except Exception:
+            pass
+        return None
+    label = "TWEET" if body_key == "tweet" else "EXPLANATION"
+    try:
+        RUN_METRICS["structured_output_converted_total"] += 1
+    except Exception:
+        pass
+    return "FINAL_RATING: " + str(rating) + "\n" + label + ": " + str(body).strip()
+
+
+def _deterministic_mode_enabled() -> bool:
+    """True when greedy/deterministic decoding is forced (temperature 0, top_k 1)."""
+    return str(globals().get("DETERMINISTIC", "off") or "off").strip().lower() == "on"
 if ALLOWED_UPDATE_MODE == "free_brounded":
     ALLOWED_UPDATE_MODE = "free_bounded"
 if ALLOWED_UPDATE_MODE not in {"assimilation_only", "free_bounded"}:
@@ -4905,6 +5239,7 @@ THEORY_STATEMENT = _clean_optional_prompt_text(getattr(args, "theory_statement",
 BIAS_TEXT = _clean_optional_prompt_text(getattr(args, "bias_text", ""))
 VERSION_METADATA = _load_version_metadata(getattr(args, "version_metadata_path", ""))
 RAG_CORPUS = _maybe_init_rag_corpus()
+_init_rag_architecture()
 
 
 def _bias_mode_from_text(bias_text: str) -> str:
@@ -5560,6 +5895,9 @@ except Exception:
 try:
     print(f"[config] max_step_change={DEFAULT_MAX_STEP_CHANGE}")
     print(f"[config] allowed_update_mode={ALLOWED_UPDATE_MODE}")
+    print(f"[config] validation_strictness={VALIDATION_STRICTNESS}")
+    print(f"[config] wrong_side_explanation_requery={WRONG_SIDE_EXPL_REQUERY}")
+    print(f"[config] deterministic={DETERMINISTIC}")
     print(f"[config] same_side_edge_unlock_hits={SAME_SIDE_EDGE_UNLOCK_HITS}")
     print(f"[config] same_rating_step3_mode={SAME_RATING_STEP3_MODE}")
     print(f"[config] think_mode={getattr(args, 'think_mode', 'off')}")
@@ -5610,7 +5948,6 @@ def _ensure_persona_card_contains_row_fields(persona_text: str, row_meta, agent_
     _add("Official-narrative suspicion", _get("official_narrative_suspicion"))
     _add("Openness to update", _get("openness_to_update"))
     _add("Value orientation", _get("value_orientation"))
-    _add("Social conformity", _get("social_conformity"))
     _add("Agency vs fatalism", _get("agency_vs_fatalism"))
     _add("Conflict style", _get("conflict_style"))
     _add("Occupation", _get("occupation"))
@@ -6018,7 +6355,6 @@ class Agent:
         self.political_leaning = _csv_clean_value(row_meta.get("political_leaning", ""))
         self.early_life = _csv_clean_value(row_meta.get("early_life", ""))
         self.value_orientation = _csv_clean_value(row_meta.get("value_orientation", ""))
-        self.social_conformity = _csv_clean_value(row_meta.get("social_conformity", ""))
         self.agency_vs_fatalism = _csv_clean_value(row_meta.get("agency_vs_fatalism", ""))
         self.conflict_style = _csv_clean_value(row_meta.get("conflict_style", ""))
         self.persona_policy = _compile_persona_validation_policy(
@@ -6029,7 +6365,6 @@ class Agent:
             official_narrative_suspicion=self.official_narrative_suspicion,
             openness_to_update=self.openness_to_update,
             value_orientation=self.value_orientation,
-            social_conformity=self.social_conformity,
             agency_vs_fatalism=self.agency_vs_fatalism,
             conflict_style=self.conflict_style,
         )
@@ -6160,6 +6495,13 @@ class Agent:
             step3_think = True
         elif think_mode == "step2_only":
             step2_think = True
+            step3_think = False
+
+        # A model KNOWN to lack thinking never runs hidden reasoning, regardless of
+        # think_mode. Unknown models are left as-is (respect think_mode).
+        if _model_has_thinking(step2_model) is False:
+            step2_think = False
+        if _model_has_thinking(step3_model) is False:
             step3_think = False
 
         # True-open Qwen runs become much less stable when hidden thinking is enabled:
@@ -6532,7 +6874,7 @@ class Agent:
 
         if not add_to_memory:
             # REMOVE last (user, ai) pair so Step-3 does not accumulate in memory.
-            # Comment out this block if you want WITH-memory runs.
+            # (add_to_memory=False keeps this step stateless by design.)
             try:
                 msgs = self.memory_step3.memory.chat_memory.messages
             except Exception:
@@ -6697,7 +7039,7 @@ class Agent:
 
         if not add_to_memory:
             # REMOVE last (user, ai) pair so Step-2 does not accumulate in memory.
-            # Comment out this block if you want WITH-memory runs.
+            # (add_to_memory=False keeps this step stateless by design.)
             try:
                 msgs = self.memory_step2.memory.chat_memory.messages
             except Exception:
@@ -7032,7 +7374,6 @@ def get_superscript(count):
     return "th"
 
 
-@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(50))
 def _should_use_native_ollama_chat(conversation) -> bool:
     """Decide whether to use Ollama's native /api/chat path.
 
@@ -7298,6 +7639,10 @@ def _collect_native_ollama_options(conversation) -> tuple[str, dict, object]:
     if 'max_tokens' in options and 'num_predict' not in options:
         options['num_predict'] = options['max_tokens']
     options.pop('max_tokens', None)
+    if _deterministic_mode_enabled():
+        options['temperature'] = 0.0
+        options['top_k'] = 1
+        options['top_p'] = 1.0
     try:
         ctx = dict(NATIVE_OLLAMA_DEBUG_CONTEXT or {})
         step_ctx = str(ctx.get('step') or '').strip().lower()
@@ -7547,6 +7892,12 @@ def _native_ollama_chat(conversation, prompt_text: str, *, include_history: bool
     if _is_qwen_family_model(model):
         prompt_to_send = _compact_qwen_prompt_text(prompt_to_send, step=step_ctx)
         think = _apply_prompt_control_think_override(prompt_to_send, model, think)
+    structured_step = step_ctx if (_structured_output_enabled() and step_ctx in {"step2", "step3"}) else None
+    if structured_step:
+        _skey = "tweet" if structured_step == "step2" else "explanation"
+        prompt_to_send = (prompt_to_send.rstrip() +
+                          "\n\nOUTPUT FORMAT OVERRIDE: respond with ONLY a JSON object, exactly "
+                          '{"final_rating": <integer>, "' + _skey + '": "<text>"} - no other keys, no extra text.')
     messages = _collect_native_ollama_messages(conversation, prompt_to_send, include_history=include_history)
 
     payload = {
@@ -7554,6 +7905,8 @@ def _native_ollama_chat(conversation, prompt_text: str, *, include_history: bool
         'messages': messages,
         'stream': False,
     }
+    if structured_step:
+        payload['format'] = 'json'   # grammar-constrained decoding: the model cannot emit non-JSON
     if think is not None:
         payload['think'] = think
     if options:
@@ -7568,6 +7921,21 @@ def _native_ollama_chat(conversation, prompt_text: str, *, include_history: bool
     data = resp.json()
     text = _extract_native_ollama_text(data)
     thinking = _extract_native_ollama_thinking(data)
+    # Thinking/token accounting: reasoning budget usage is a per-model property worth
+    # reporting (cost + behaviour); eval_count/prompt_eval_count come from Ollama itself.
+    try:
+        _sk = step_ctx or 'other'
+        RUN_METRICS[f'native_calls_total::{_sk}'] += 1
+        RUN_METRICS[f'thinking_chars_total::{_sk}'] += len(thinking or '')
+        if thinking:
+            RUN_METRICS[f'thinking_calls_total::{_sk}'] += 1
+        _ec = data.get('eval_count'); _pc = data.get('prompt_eval_count')
+        if isinstance(_ec, int):
+            RUN_METRICS[f'output_tokens_total::{_sk}'] += _ec
+        if isinstance(_pc, int):
+            RUN_METRICS[f'prompt_tokens_total::{_sk}'] += _pc
+    except Exception:
+        pass
     note = ('empty_final_text' if not text else '')
     _dump_native_ollama_payload_debug(
         prompt_text=prompt_to_send,
@@ -7681,6 +8049,10 @@ def _native_ollama_chat(conversation, prompt_text: str, *, include_history: bool
         )
     except Exception:
         pass
+    if structured_step and text:
+        converted = _structured_json_to_canonical(text, structured_step)
+        if converted:
+            text = converted
     if save_turn:
         _save_native_ollama_turn(conversation, prompt_to_send, text)
     return text
@@ -7858,6 +8230,15 @@ def _recover_wrapper_empty_output(conversation, prompt, *, resp=None, use_histor
     return recovered, recovery_source
 
 
+@retry(wait=wait_random_exponential(min=1, max=10), stop=stop_after_attempt(5), reraise=True)
+def _invoke_llm_with_retry(llm, msgs):
+    """Call the LLM with a bounded retry on transient errors (e.g. Ollama hiccups).
+
+    Wraps only the network call, before any conversation turn is saved, so a failed
+    attempt cannot duplicate history. After the attempts are exhausted the original
+    exception is re-raised so the existing predict() fallback still runs.
+    """
+    return llm.invoke(msgs)
 def _invoke_chatollama_path(conversation, prompt, *, use_history: bool = True, save_turn: bool = True):
     """
     Execute one LLM call through the LangChain ChatOllama wrapper.
@@ -7875,7 +8256,7 @@ def _invoke_chatollama_path(conversation, prompt, *, use_history: bool = True, s
             input=prompt,
         )
         msgs = formatted.to_messages()
-        resp = conversation.llm.invoke(msgs)
+        resp = _invoke_llm_with_retry(conversation.llm, msgs)
         out = _extract_chatollama_invoke_text(resp)
         recovery_source = ''
         if not str(out or '').strip():
@@ -9142,6 +9523,26 @@ def _step2_possible_unsupported_v130_topic_claim(tweet_text: str, claim_text: st
     return sorted(tweet_families - grounded_families)
 
 
+_PM1_STRONG_WORDS = re.compile(r"\b(?:strongly|definitely|absolutely|certainly|undeniabl[ey]|unquestionabl[ey]|impossible|proven|guaranteed|no doubt|without doubt|beyond doubt|completely|totally|100%|clearly (?:true|false))\b", re.I)
+
+
+def _step2_pm1_overstrong_wording(tweet_text: str, rating) -> list:
+    if not _content_enforcement_enabled():
+        return []
+    """Warning-only: a mild (+/-1) tweet that uses strong/absolute wording.
+
+    Returns the strong tokens found. It never triggers a retry or fallback; the
+    caller only logs it, so it does not alter the tweet or the dynamics.
+    """
+    try:
+        if abs(int(rating)) != 1:
+            return []
+    except Exception:
+        return []
+    found = _PM1_STRONG_WORDS.findall(str(tweet_text or ""))
+    return sorted(set(str(x).strip().lower() for x in found)) if found else []
+
+
 def _unsupported_external_reference_flags(tweet_text: str, world_mode: str, fact_pack_text: str = "", extra_grounding_text: str = "") -> tuple[bool, list[str]]:
     """Detect unsupported external-reference language in Step-2 tweets.
 
@@ -9575,88 +9976,6 @@ def _step3_explanation_on_topic(expl_text: str, tweet_text: str = "") -> bool:
     expl_low = expl.lower()
     tw_low = tw.lower()
     return any(m in expl_low and m in tw_low for m in motifs)
-
-def _step3_expl_semantic_label(expl: str) -> str | None:
-    """Classify a Step-3 explanation as supporting, opposing, mixed, or unknown."""
-    low = re.sub(r"\s+", " ", str(expl or "")).strip().lower()
-    if not low:
-        return None
-    support_markers = [
-        "supports the claim", "supports this claim", "makes the claim more plausible",
-        "increases my confidence", "pushes me toward agreement", "more convinced",
-        "more supportive", "lean more positive", "lean slightly more positive",
-        "more likely the claim is true", "strengthens the case for", "evidence for"
-    ]
-    oppose_markers = [
-        "undermines the claim", "makes the claim less plausible", "decreases my confidence",
-        "pushes me toward disagreement", "more skeptical", "lean more negative",
-        "lean slightly more negative", "more likely the claim is false",
-        "strengthens the case against", "evidence against"
-    ]
-    uncertain_markers = [
-        "mixed", "uncertain", "not enough to fully change", "keeps me unsure",
-        "both sides", "balanced", "ambiguous"
-    ]
-    if any(m in low for m in support_markers):
-        return "support"
-    if any(m in low for m in oppose_markers):
-        return "oppose"
-    if any(m in low for m in uncertain_markers):
-        return "uncertain"
-    return None
-
-def _visible_planning_meta_reason(text: str, field: str = "generic") -> str | None:
-    """Detect visible planning or self-monitoring language in a model explanation."""
-    low = re.sub(r"\s+", " ", str(text or "")).strip().lower()
-    if not low:
-        return None
-    markers = [
-        "shown above", "above information", "based on the information above",
-        "broader context", "overall evidence", "whole case",
-        "the materials", "the provided materials"
-    ]
-    for m in markers:
-        if m in low:
-            return f"{field}_meta_visible_planning"
-    return None
-
-def _generic_canned_reason_reason(text: str, field: str = "generic") -> str | None:
-    """Detect generic canned explanations that do not respond to the tweet."""
-    low = re.sub(r"\s+", " ", str(text or "")).strip().lower()
-    if not low:
-        return None
-    canned = [
-        "this tweet provides evidence", "this tweet offers evidence",
-        "this information is relevant", "this supports the topic",
-        "this challenges the topic", "it is persuasive because",
-        "it is not persuasive enough because"
-    ]
-    for m in canned:
-        if low.startswith(m):
-            return f"{field}_canned_formula"
-    return None
-
-def _step3_generic_gap_reason(text: str, tweet_text: str = "", pre_value: int | None = None, final_value: int | None = None, tweet_stance_local: str | None = None) -> str | None:
-    """Detect overly generic Step-3 explanations about evidence gaps."""
-    expl = re.sub(r"\s+", " ", str(text or "")).strip()
-    if not expl:
-        return "missing_explanation_text"
-    low = expl.lower()
-    generic_phrases = [
-        "strong evidence", "convincing evidence", "credible evidence",
-        "overall evidence", "broader context", "whole case", "generally persuasive",
-        "not persuasive enough"
-    ]
-    if any(p in low for p in generic_phrases) and not _step3_explanation_on_topic(expl, tweet_text):
-        return "generic_off_topic_explanation"
-    if tweet_stance_local == "support" and pre_value is not None and final_value is not None and pre_value < 0 < final_value:
-        if "specific" not in low and "because" not in low:
-            return "generic_cross_side_positive_move"
-    if tweet_stance_local == "oppose" and pre_value is not None and final_value is not None and pre_value > 0 > final_value:
-        if "specific" not in low and "because" not in low:
-            return "generic_cross_side_negative_move"
-    return None
-
 
 def _tweet_contains_hedge_language(tweet_text: str, explanation_text: str = "") -> bool:
     """Detect hedge / softening cues that make a same-side tweet weaker than an extreme prior."""
@@ -11611,7 +11930,10 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
         return (m.group(1) or "").strip()
 
     def _allowed_set(pre: int):
-        """Normalize the allowed-rating set used by the local validator."""
+        """Fallback allowed set for the local validator when the caller passed no
+        allowed_ratings: plain +-max_step_change neighborhood, deliberately
+        mode-agnostic (no not-away filter). The real pipeline always passes the
+        set from _compute_allowed_ratings, which enforces the update mode."""
         pre = int(pre)
         try:
             msc = int(DEFAULT_MAX_STEP_CHANGE) if DEFAULT_MAX_STEP_CHANGE is not None else 1
@@ -11964,6 +12286,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
             allowed_ratings=allowed_list,
         )
         if strict_closed_external_reason:
+            _metric_inc('closed_world_leak_step3')
             val_warnings = list(val_warnings or []) + [strict_closed_external_reason]
         return r, cleaned, raw_text, meta_reason, ok, val_reason, val_warnings
 
@@ -12140,6 +12463,7 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
             allowed_ratings=allowed_list,
         )
         if strict_closed_external_reason:
+            _metric_inc('closed_world_leak_step3')
             val_warnings = list(val_warnings or []) + [strict_closed_external_reason]
         return r, cleaned, raw_text, meta_reason, ok, val_reason, val_warnings, meta
 
@@ -12519,6 +12843,26 @@ def get_step3_llm_response(conversation, prompt: str, pre_belief: int, add_to_me
                 # The deterministic fallback below keeps the fixed legal rating and
                 # builds a bounded explanation from the current tweet instead of
                 # allowing a second LLM call to add unsupported broad-evidence claims.
+                if not rescue_used and _wrong_side_explanation_requery_enabled():
+                    try:
+                        _rq_prompt = _compact_step3_rescue_prompt(compact=True, fixed_rating=int(parsed_rating), original_explanation=current_expl)
+                        _rq_raw = _native_ollama_chat(conversation, _rq_prompt, include_history=False, save_turn=False)
+                        _rq_expl = _extract_explanation_text(sanitize_step3_output(_rq_raw)) or ''
+                        _rq_ok = bool(_rq_expl and _rq_expl.strip())
+                        if _rq_ok and _step3_explanation_wrong_side_anchor(_rq_expl, int(parsed_rating), tweet_txt, pre_belief=int(pre_belief)):
+                            _rq_ok = False
+                        if _rq_ok and _step3_explanation_obvious_fragment_reason(_rq_expl):
+                            _rq_ok = False
+                        if _rq_ok and _normalize_world_mode(WORLD) in {"closed_strict", "closed_strict_rag"} and _step3_strict_closed_external_reason_reason(_rq_expl, tweet_txt, prompt_text=prompt):
+                            _rq_ok = False
+                        if _rq_ok:
+                            # Rating stays FIXED at parsed_rating; only the explanation is replaced.
+                            final_out = _format_step3_output_preserve_explanation(final_rating=int(parsed_rating), explanation=_rq_expl)
+                            final_tags.append('step3_wrong_side_explanation_requery')
+                            current_expl = _extract_explanation_text(final_out) or current_expl
+                            rescue_used = True
+                    except Exception:
+                        pass
                 if not rescue_used:
                     local_expl = _step3_safe_fallback_explanation_for_rating(tweet_txt, int(parsed_rating), int(pre_belief), tweet_stance)
                     if local_expl:
@@ -13195,6 +13539,7 @@ def get_step2_llm_response(conversation, prompt, expected_current_belief, add_to
             extra_grounding_text=grounding_text,
         )
         if has_unsupported_external_ref:
+            _metric_inc('closed_world_leak_step2')
             reason = f"unsupported external-reference language: {external_ref_flags}"
             try:
                 print(f"[warn][step2][{agent_name or 'UNKNOWN'}] {reason} on attempt {attempt}/{max_attempts}")
@@ -13228,6 +13573,19 @@ def get_step2_llm_response(conversation, prompt, expected_current_belief, add_to
                 step2_quality = 'warning_soft'
             _log_step2_event('warning', attempt, reason, raw_text_str, text, current_final)
             # Warning-only: do not mark contaminated, retry, or fallback here.
+        pm1_strong_flags = _step2_pm1_overstrong_wording(tweet_one_line, r_i)
+        if pm1_strong_flags:
+            reason = f"step2_pm1_overstrong_wording:{pm1_strong_flags}"
+            try:
+                print(f"[warn][step2][{agent_name or 'UNKNOWN'}] {reason} on attempt {attempt}/{max_attempts}")
+            except Exception:
+                pass
+            _metric_inc('step2_pm1_overstrong_wording')
+            current_final = f"FINAL_RATING: {int(r_i)}\nTWEET: {tweet_one_line}".strip()
+            _add_warning_tag(attempt, reason)
+            _log_step2_event('warning', attempt, reason, raw_text_str, text, current_final)
+            # Warning-only: mild +/-1 tweet used strong wording; do not retry or fallback.
+
 
         wrong_dir, wrong_dir_reason = _clear_step2_wrong_direction(tweet_one_line, r_i)
         if wrong_dir:
@@ -13411,6 +13769,8 @@ def _is_refusal_or_meta(text: str) -> bool:
     return any(n in s for n in needles)
 
 def _visible_planning_meta_reason(text: str, field: str = "generic") -> str | None:
+    if not _content_enforcement_enabled():
+        return None
     """Detect visible planning / prompt-echo text that should not appear in final protocol fields."""
     if not text:
         return None
@@ -13483,6 +13843,8 @@ def _visible_planning_meta_reason(text: str, field: str = "generic") -> str | No
 
 
 def _generic_canned_reason_reason(text: str, field: str = "generic") -> str | None:
+    if not _content_enforcement_enabled():
+        return None
     """Detect broad canned reasoning that ignores concrete shown material.
 
     This fires only when some fact-pack / RAG / shown-material grounding is actually present in
@@ -13704,6 +14066,8 @@ def _step2_persona_canned_reason(text: str, current_belief: int | None = None) -
 
 
 def _step3_generic_gap_reason(text: str, tweet_text: str = "", pre_value: int | None = None, final_value: int | None = None, tweet_stance_local: str | None = None) -> str | None:
+    if not _content_enforcement_enabled():
+        return None
     """Detect Step-3 explanations that rely on generic weighing language instead of a concrete tweet-specific gap."""
     if not text:
         return None
@@ -13776,6 +14140,8 @@ def _step3_generic_gap_reason(text: str, tweet_text: str = "", pre_value: int | 
 
 
 def _clear_step2_wrong_direction(tweet_text: str, expected_current_belief: int) -> tuple[bool, str]:
+    if not _content_enforcement_enabled():
+        return False, ""
     """Very conservative detector for obviously wrong-direction Step-2 tweets.
 
     This is intentionally light-touch: it only flags clear polarity failures, mainly from the
@@ -13869,27 +14235,35 @@ def _clear_step2_wrong_direction(tweet_text: str, expected_current_belief: int) 
         r"\bunexplained\b",
     ]
 
-    has_pos = any(re.search(p, opener, flags=re.I) for p in unambiguous_pos_patterns)
+    # Scope: judge only the opening sentence for strong ratings (+/-2, strict),
+    # but judge the whole tweet for mild ratings (+/-1) so a tentative +/-1 may
+    # open with a concession to the other side as long as the tweet does not,
+    # overall, lean clearly to the wrong sign.
+    scope = s if abs(r_i) == 1 else opener
+    scope_label = "tweet" if abs(r_i) == 1 else "opener"
+    # Strip common intensifiers so "I strongly doubt" / "I really believe" still match the
+    # base direction patterns (e.g. \bi doubt\b). Intensifiers do not change polarity.
+    scope = re.sub(r"\b(?:strongly|really|very|seriously|quite|absolutely|truly|totally|completely|fully|deeply|honestly|genuinely)\s+", "", scope)
+
+    has_pos = any(re.search(p, scope, flags=re.I) for p in unambiguous_pos_patterns)
     if not has_pos:
         for p in ambiguous_pos_patterns:
-            m = re.search(p, opener, re.I)
-            if m and not _negated_context(opener, m.start()):
+            m = re.search(p, scope, re.I)
+            if m and not _negated_context(scope, m.start()):
                 has_pos = True
                 break
 
-    has_neg = any(re.search(p, opener, flags=re.I) for p in neg_patterns)
+    has_neg = any(re.search(p, scope, flags=re.I) for p in neg_patterns)
 
-    # Mild same-side hedging like "I lean toward believing ... though details still feel unclear"
-    # should not be treated as a wrong-direction opener just because the opener contains one caveat.
     if r_i > 0 and has_pos:
         return False, ""
     if r_i < 0 and has_neg:
         return False, ""
 
     if r_i > 0 and has_neg and not has_pos:
-        return True, "clear opener reads AGAINST for a positive current rating"
+        return True, f"clear {scope_label} reads AGAINST for a positive current rating"
     if r_i < 0 and has_pos and not has_neg:
-        return True, "clear opener reads FOR for a negative current rating"
+        return True, f"clear {scope_label} reads FOR for a negative current rating"
     return False, ""
 
 
@@ -13897,6 +14271,8 @@ def _clear_step2_wrong_direction(tweet_text: str, expected_current_belief: int) 
 
 
 def _step2_self_undermining_concession(tweet_text: str, expected_current_belief: int) -> tuple[bool, str]:
+    if not _content_enforcement_enabled():
+        return False, ""
     """Light-touch detector for mixed / self-undermining Step-2 tweets at nonzero ratings.
 
     Goal: catch tweets like 'I somewhat agree ... but I still need more evidence' or the
@@ -15580,47 +15956,19 @@ def main(
         dict_csv["time_step"] = [0]
         dict_csv[agent.agent_name] = [agent.init_belief]
         
-    csv_folder = (
-        os.path.join(path_result, args.output_file.split(".cs")[0])
-        + "_"
-        + str(args.num_agents)
-        + "_"
-        + str(args.num_steps)
-        + "_"
-        + args.version_set
-        + "_"
-        + date_version
-        + "_"
-        + args.distribution
+    # New-scheme run folder: compact bias abbreviation, no date/distribution
+    # suffix (see scripts/run_naming.py). Every artifact below derives its file
+    # name from os.path.basename(csv_folder), so the folder name IS the stem.
+    _run_stem = run_naming.run_stem(
+        args.output_file.split(".cs")[0], args.num_agents, args.num_steps, args.version_set
     )
+    csv_folder = os.path.join(path_result, _run_stem)
 
     out_name = (
-        os.path.join(csv_folder, args.output_file.split(".cs")[0])
-        + "_"
-        + str(args.num_agents)
-        + "_"
-        + str(args.num_steps)
-        + "_"
-        + args.version_set
-        + "_network_opinion_change_"
-        + date_version
-        + "_"
-        + args.distribution
-        + ".csv"
+        os.path.join(csv_folder, os.path.basename(csv_folder) + "_opinion_change.csv")
     )
     interaction_out_name = (
-        os.path.join(csv_folder, args.output_file.split(".cs")[0])
-        + "_"
-        + str(args.num_agents)
-        + "_"
-        + str(args.num_steps)
-        + "_"
-        + args.version_set
-        + "_network_interactions_"
-        + date_version
-        + "_"
-        + args.distribution
-        + ".csv"
+        os.path.join(csv_folder, os.path.basename(csv_folder) + "_interactions.csv")
     )
 
     os.makedirs(csv_folder, exist_ok=True)
@@ -15633,8 +15981,10 @@ def main(
     global WEB_EVENTS_LOG_CSV_PATH
     global NATIVE_EVENTS_LOG_CSV_PATH
     RETRY_DEBUG_DIR = os.path.join(csv_folder, "_retry_debug")
-    safe_out_base = _safe_file_token(os.path.splitext(os.path.basename(args.output_file))[0])
-    RUN_EXPORT_ID = f"{safe_out_base}_{int(args.num_agents)}_{int(args.num_steps)}_{_safe_file_token(args.version_set)}_{_safe_file_token(date_version)}_{_safe_file_token(args.distribution)}_seed{int(args.seed)}"
+    # Run id for retry-debug logs, the metrics JSON, and per-row run labels:
+    # the compact stem (folder name), so every artifact shares one id.
+    RUN_EXPORT_ID = _safe_file_token(os.path.basename(csv_folder))
+    globals()['RUN_OUTPUT_DIR'] = csv_folder
     REPAIR_LOG_RUN_LABEL = RUN_EXPORT_ID
     REPAIR_LOG_CSV_PATH = os.path.join(RETRY_DEBUG_DIR, f"repair_events_{REPAIR_LOG_RUN_LABEL}.csv")
     RAG_RETRIEVAL_LOG_CSV_PATH = None
@@ -15644,75 +15994,20 @@ def main(
     _ensure_repair_log_file()
     _ensure_native_events_log_file()
     metrics_out_name = (
-        os.path.join(csv_folder, args.output_file.split(".cs")[0])
-        + "_"
-        + str(args.num_agents)
-        + "_"
-        + str(args.num_steps)
-        + "_"
-        + args.version_set
-        + "_network_run_metrics_"
-        + date_version
-        + "_"
-        + args.distribution
-        + ".csv"
+        os.path.join(csv_folder, os.path.basename(csv_folder) + "_run_metrics.csv")
     )
     step_summary_out_name = (
-        os.path.join(csv_folder, args.output_file.split(".cs")[0])
-        + "_"
-        + str(args.num_agents)
-        + "_"
-        + str(args.num_steps)
-        + "_"
-        + args.version_set
-        + "_network_step_summary_"
-        + date_version
-        + "_"
-        + args.distribution
-        + ".csv"
+        os.path.join(csv_folder, os.path.basename(csv_folder) + "_step_summary.csv")
     )
     step2_event_out_name = (
-        os.path.join(csv_folder, args.output_file.split(".cs")[0])
-        + "_"
-        + str(args.num_agents)
-        + "_"
-        + str(args.num_steps)
-        + "_"
-        + args.version_set
-        + "_network_step2_events_"
-        + date_version
-        + "_"
-        + args.distribution
-        + ".csv"
+        os.path.join(csv_folder, os.path.basename(csv_folder) + "_step2_events.csv")
     )
 
     agent_summary_out_name = (
-        os.path.join(csv_folder, args.output_file.split(".cs")[0])
-        + "_"
-        + str(args.num_agents)
-        + "_"
-        + str(args.num_steps)
-        + "_"
-        + args.version_set
-        + "_network_agent_summary_"
-        + date_version
-        + "_"
-        + args.distribution
-        + ".csv"
+        os.path.join(csv_folder, os.path.basename(csv_folder) + "_agent_summary.csv")
     )
     network_hub_metrics_out_name = (
-        os.path.join(csv_folder, args.output_file.split(".cs")[0])
-        + "_"
-        + str(args.num_agents)
-        + "_"
-        + str(args.num_steps)
-        + "_"
-        + args.version_set
-        + "_network_hub_metrics_"
-        + date_version
-        + "_"
-        + args.distribution
-        + ".csv"
+        os.path.join(csv_folder, os.path.basename(csv_folder) + "_hub_metrics.csv")
     )
     if DEBUG_RETRY_SAVE_FILES:
         os.makedirs(RETRY_DEBUG_DIR, exist_ok=True)
@@ -16182,6 +16477,9 @@ def main(
             _metric_inc_transition(int(agent_i_pre_belief), int(agent_i_post_belief))
             listener_valid_interaction_flag = int(getattr(agent_i, 'last_step3_valid_interaction', 1))
             listener_pipeline_artifact_flag = int(getattr(agent_i, 'last_step3_pipeline_artifact', 0))
+            if listener_pipeline_artifact_flag:
+                _metric_inc('holds_total')
+                _metric_inc(f'holds_by_step::{int(t) + 1}')
             if listener_valid_interaction_flag and not listener_pipeline_artifact_flag:
                 _metric_inc('listener_valid_interaction_events_total')
             else:
@@ -16442,8 +16740,7 @@ def main(
                 )
 
                 step_edge_path = (
-                    os.path.join(csv_folder, args.output_file.split(".cs")[0])
-                    + f"_step_{t:03d}_{args.version_set}_edges.csv"
+                    os.path.join(csv_folder, os.path.basename(csv_folder) + f"_step_{t:03d}_edges.csv")
                 )
 
                 df_edges_step.to_csv(step_edge_path, index=False)
@@ -16604,8 +16901,7 @@ def main(
                         columns=["i_idx", "j_idx", "i_name", "j_name"]
                     )
                     step_edge_path = (
-                        os.path.join(csv_folder, args.output_file.split(".cs")[0])
-                        + f"_step_{int(synthetic_step)-1:03d}_{args.version_set}_edges.csv"
+                        os.path.join(csv_folder, os.path.basename(csv_folder) + f"_step_{int(synthetic_step)-1:03d}_edges.csv")
                     )
                     df_edges_step.to_csv(step_edge_path, index=False)
 
@@ -16613,18 +16909,7 @@ def main(
         # pd.DataFrame.from_dict(dict_csv).to_csv(out_name)
         # ---- NEW: summarize final neighbor opinions (echo-chamber diagnostics)
     neighbor_summary_name = (
-        os.path.join(csv_folder, args.output_file.split(".cs")[0])
-        + "_"
-        + str(args.num_agents)
-        + "_"
-        + str(args.num_steps)
-        + "_"
-        + args.version_set
-        + "_"
-        + date_version
-        + "_network_neighbor_summary_"
-        + args.distribution
-        + ".csv"
+        os.path.join(csv_folder, os.path.basename(csv_folder) + "_neighbor_summary.csv")
     )
 
     os.makedirs(os.path.dirname(neighbor_summary_name), exist_ok=True)
@@ -16789,18 +17074,7 @@ def post_process_tweet(dict_agent_tweet, path_result, date_version, csv_folder):
         print("Created a fresh directory!")
 
     out_name = (
-        os.path.join(csv_folder, args.output_file.split(".cs")[0])
-        + "_"
-        + str(args.num_agents)
-        + "_"
-        + str(args.num_steps)
-        + "_"
-        + args.version_set
-        + "_"
-        + date_version
-        + "_network_agent_tweet_history_"
-        + args.distribution
-        + ".csv"
+        os.path.join(csv_folder, os.path.basename(csv_folder) + "_agent_tweet_history.csv")
     )
     with open(out_name, "w", newline="", encoding="utf-8") as g:
         writer = csv.writer(g, delimiter=",")
@@ -16843,18 +17117,7 @@ def post_process_response(dict_agent_response, path_result, date_version,csv_fol
         print("Created a fresh directory!")
 
     out_name = (
-        os.path.join(csv_folder, args.output_file.split(".cs")[0])
-        + "_"
-        + str(args.num_agents)
-        + "_"
-        + str(args.num_steps)
-        + "_"
-        + args.version_set
-        + "_"
-        + date_version
-        + "_network_agent_response_history_"
-        + args.distribution
-        + ".csv"
+        os.path.join(csv_folder, os.path.basename(csv_folder) + "_agent_response_history.csv")
     )
     with open(out_name, "w", encoding="utf-8") as f:
         writer = csv.writer(f, delimiter=",")
@@ -16895,7 +17158,6 @@ def post_process_response(dict_agent_response, path_result, date_version,csv_fol
             writer.writerow(row)
     return
 
-import re
 from typing import Optional
 
 
@@ -17055,9 +17317,144 @@ def extract_reasoning(tweet):
     return reasoning
 
 
+def _run_solo_check():
+    """
+    Solo model check (merged from opinion_dynamics_v3_check.py, 2026-07-17).
+
+        N independent samples of the model answer the version's step1_report.md (fallback: the
+        shared llm_check_template) about the claim - no personas, no network, no interactions.
+        This measures the model's own prior on the topic and serves as the per-model baseline
+        for cross-model comparisons. Runs on the SAME native Ollama path and decoding options
+        as normal runs (single inference stack -> comparable numbers), keeps the v3 update rule
+        (delta clamped to +/-1 per step from a neutral start) and the v3 output layout
+        (*_opinion_change_* trajectories CSV + raw responses CSV), and adds a metrics JSON with
+        config self-documentation and call counters.
+    """
+    import json as _json
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+
+    experiment_id = "Flache_2017"
+    model_name = str(args.model_name)
+    model_name_for_path = re.sub(r'[<>:"/\\|?*]', "_", model_name).strip().rstrip(".")
+    num_agents = int(args.num_agents)
+    num_steps = int(args.num_steps)
+
+    base_root = os.path.join("prompts", "opinion_dynamics", experiment_id)
+    vset = str(getattr(args, "version_set", "") or "").strip()
+    candidates = []
+    if vset:
+        candidates.append(os.path.join(base_root, _version_prefix(vset), vset, "step1_report.md"))
+    candidates.append(os.path.join(base_root, "llm_check_template", "step1_report.md"))
+    report_path = next((c for c in candidates if os.path.exists(c)), None)
+    if not report_path:
+        raise SystemExit(f"[solo_check] no step1_report.md found (tried: {candidates})")
+
+    claim = _current_claim_text() or ""
+    base_prompt = open(report_path, encoding="utf-8").read()
+    base_prompt = base_prompt.replace("{THEORY_STATEMENT}", claim).replace("{CLAIM}", claim)
+
+    llm = build_chat_ollama(model_name, float(args.temperature))
+    conv = type("SoloConversation", (), {"llm": llm})()
+
+    path_result = os.path.join("results", "opinion_dynamics", experiment_id, model_name_for_path)
+    if getattr(args, "test_run", False):
+        path_result = os.path.join(path_result, "test_runs")
+    os.makedirs(path_result, exist_ok=True)
+    stem = os.path.splitext(str(getattr(args, "output_file", "") or "llm_check"))[0] or "llm_check"
+    tag = f"{stem}_{num_agents}_{num_steps}_{vset or 'llm_check'}"
+    out_name = os.path.join(path_result, f"{tag}_opinion_change_20231212_uniform.csv")
+    raw_name = os.path.join(path_result, f"{tag}_llm_check_raw_responses_20231212.csv")
+    metrics_name = os.path.join(path_result, f"{tag}_solo_check_metrics.json")
+
+    print(f"[solo_check] template: {report_path}")
+    print(f"[solo_check] claim: {claim[:120]}")
+    print(f"[solo_check] model={model_name} agents={num_agents} steps={num_steps} "
+          f"temperature={args.temperature}")
+
+    beliefs = [0 for _ in range(num_agents)]
+    data = {"time_step": [0]}
+    for k in range(num_agents):
+        data[f"Agent_{k+1}"] = [0]
+    calls = parse_fail = reprompts = 0
+
+    with open(raw_name, "w", newline="", encoding="utf-8") as raw_f:
+        raw_writer = csv.writer(raw_f)
+        raw_writer.writerow(["time_step", "agent_index", "response_text", "extracted_rating"])
+        for t in range(num_steps):
+            data["time_step"].append(t + 1)
+            for k in range(num_agents):
+                _set_native_ollama_debug_context(step="solo_check", agent_name=f"Agent_{k+1}",
+                                                 attempt=None, label="solo")
+                response = ""
+                for _attempt in range(3):
+                    response = _native_ollama_chat(conv, base_prompt,
+                                                   include_history=False, save_turn=False)
+                    calls += 1
+                    if re.search(r"[+-]?\d*\.\d+", response or ""):
+                        reprompts += 1
+                        continue
+                    ok = False
+                    for m in re.findall(r"[-+]?\d+", response or ""):
+                        try:
+                            if -2 <= int(m) <= 2:
+                                ok = True
+                                break
+                        except ValueError:
+                            continue
+                    if ok:
+                        break
+                    reprompts += 1
+                rating = extract_belief(response)
+                if rating is None:
+                    parse_fail += 1
+                    new_belief = beliefs[k]
+                else:
+                    delta = max(-1, min(1, int(rating) - beliefs[k]))
+                    new_belief = max(-2, min(2, beliefs[k] + delta))
+                beliefs[k] = new_belief
+                data[f"Agent_{k+1}"].append(new_belief)
+                raw_writer.writerow([t + 1, k + 1, response, rating])
+            print(f"[solo_check] step {t+1}/{num_steps} mean belief: "
+                  f"{sum(beliefs)/max(1, num_agents):+.2f}")
+
+    pd.DataFrame.from_dict(data).to_csv(out_name, index=False, encoding="utf-8")
+    dist = {str(v): beliefs.count(v) for v in (-2, -1, 0, 1, 2)}
+    metrics = {
+        "mode": "solo_check",
+        "config": {
+            "model": model_name,
+            "temperature": float(args.temperature),
+            "top_p": getattr(args, "top_p", None),
+            "top_k": getattr(args, "top_k", None),
+            "seed": int(args.seed),
+            "version_set": vset,
+            "template": report_path,
+            "claim": claim,
+            "num_agents": num_agents,
+            "num_steps": num_steps,
+        },
+        "counters": {"native_calls": calls, "parse_failures": parse_fail,
+                     "integer_reprompts": reprompts},
+        "final": {"mean_belief": sum(beliefs) / max(1, num_agents), "distribution": dist},
+    }
+    with open(metrics_name, "w", encoding="utf-8") as mf:
+        _json.dump(metrics, mf, indent=1)
+    print(f"[solo_check] trajectories -> {out_name}")
+    print(f"[solo_check] raw responses -> {raw_name}")
+    print(f"[solo_check] metrics -> {metrics_name}")
+    print(f"[solo_check] final mean belief {metrics['final']['mean_belief']:+.2f}, "
+          f"distribution {dist}, parse failures {parse_fail}/{calls}")
+
+
 if __name__ == "__main__":
     random.seed(args.seed)
     np.random.seed(args.seed)
+
+    if str(getattr(args, "solo_check", "off")).strip().lower() == "on":
+        _run_solo_check()
+        sys.exit(0)
 
     experiment_id = "Flache_2017"
     model_name = args.model_name

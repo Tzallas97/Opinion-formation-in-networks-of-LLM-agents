@@ -20,20 +20,6 @@ def _safe_int(x: Any, default: int | None = None) -> int | None:
         return default
 
 
-def _norm_cat(x: Any) -> str | None:
-    """Normalize a categorical attribute into a lowercase comparison token."""
-    if x is None:
-        return None
-    s = str(x).strip().lower()
-    return s if s else None
-
-
-def _cat_map(values: list[str | None]) -> dict[str, int]:
-    """Build a deterministic integer encoding for non-empty categorical values."""
-    vals = sorted({v for v in values if v is not None})
-    return {v: i for i, v in enumerate(vals)}
-
-
 def _homophily_order_indices(
     num_agents: int,
     seed: int | None,
@@ -576,7 +562,7 @@ def build_barabasi_albert(
 # SCORING-BASED HOMOPHILY
 # -----------------------------
 
-# Opinion distance -> points (your homophily curve)
+# Opinion distance -> points: the opinion component of compute_pair_score.
 OPINION_POINTS = {
     0: 100,  # same opinion
     1: 60,
@@ -585,9 +571,8 @@ OPINION_POINTS = {
     4: 5,    # opposite extremes
 }
 
-# Helper mappings: adjust these to match your CSV values if needed
+# Ordinal encodings for the persona attributes used by compute_pair_score.
 POLITICAL_MAP = {
-    # Example mapping – change to match your data
     "far_left": -3,
     "left": -2,
     "center_left": -1,
@@ -806,6 +791,8 @@ def maybe_add_new_friends_before_interaction(
 ) -> None:
     """
     Called at the START of an interaction between (listener_idx, speaker_idx).
+    Not called by the current simulator (networks are static during a run);
+    retained, working, for evolving-network experiments.
 
     Models: "we go for coffee and I might bring a friend".
 
@@ -817,7 +804,7 @@ def maybe_add_new_friends_before_interaction(
         * same opinion (|op_focal - op_k| == 0)
         * compute_pair_score(focal, k, ...) >= add_score_threshold
         * probability p_add
-        * degrees stay within [min_degree, max_degree]
+        * both endpoint degrees stay <= max_degree
         * at most max_new_edges_per_step per call (both sides combined)
     """
     if rng is None:
@@ -900,6 +887,8 @@ def maybe_cut_edge_after_interaction(
     """
     Called at the END of an interaction between (listener_idx, speaker_idx),
     AFTER the listener's opinion has potentially changed.
+    Not called by the current simulator (networks are static during a run);
+    retained, working, for evolving-network experiments.
 
     Edge (L,S) is considered weak if:
       - S_LS <= cut_score_threshold  (low overall similarity)
@@ -1036,6 +1025,8 @@ def choose_neighbor_scoring(
 ) -> int:
     """
     Choose ONE neighbor for `agent_idx` using scoring-based homophily.
+    Convenience wrapper over `choose_partner_scoring` for neighbor dicts; the
+    current simulator builds candidate lists and calls that function directly.
 
     - For each neighbor j, compute a score.
       * score_mode="full" -> `compute_pair_score(i,j)` (opinion + persona attributes)

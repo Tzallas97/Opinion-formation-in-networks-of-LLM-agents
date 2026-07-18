@@ -7,6 +7,10 @@ talk to their neighbours over a network, and update what they believe.
 
 ![Two populations of LLM agents forming opinions over a network](assets/network_opinion_dynamics.png)
 
+The core thesis pipeline is the simulation, the launcher, and the plotting script. The repo also
+ships a larger offline analysis and evaluation toolkit (`tools/`) that goes beyond the thesis; it
+is documented at the end of this README under [Extended toolkit](#extended-toolkit--programme-expansion).
+
 ## Synopsis
 
 Simulating opinion dynamics helps us understand phenomena such as polarisation
@@ -42,20 +46,31 @@ list_agent_descriptions.csv             Master agent personas (input to prompt
                                         generation)
 scripts/
     ui_lancher11.py                     Tkinter launcher. Main entry point.
-    opinion_dynamics_test_network_qwen.py  The simulation itself.
-    opinion_dynamics_v3_check.py        Calibration check, run from the terminal.
+    opinion_dynamics_test_network_qwen.py  The simulation itself (also the solo
+                                        model check, via --solo_check on).
     create_prompts.py                   Generates prompt folders for a version.
     network_models.py                   Small-world / Erdos-Renyi / Barabasi-Albert
                                         builders and neighbour selection.
+    run_naming.py                       Shared run-folder / file naming + the mode
+                                        abbreviations (read by every tool).
     main_plot_network.py                Plots and animations of a finished run.
+    plot_launcher.py                    Tkinter GUI that drives main_plot_network.
+    compare_runs.py                     Overlay several runs on one figure (+ GUI).
     persona_profiles_support.py         Persona loading and the persona editor.
     topic_persona_fields.py             Persona field definitions.
     topic_persona_profiles.py           Persona profile logic.
     config/persona_profiles.json        Persona definitions (incl. trust).
     config/persona_schema.json          Schema the personas validate against.
-    .launcher_settings.json             Saved launcher state.
+tools/                                  Extended analysis/evaluation toolkit
+                                        (see "Extended toolkit" below).
+tests/                                  Headless GUI smoke test + tkinter stub.
+docs/                                   User-facing guides for each GUI and tool.
 requirements.txt                        Python dependencies (Python 3.12).
 ```
+
+The launcher saves its state to `scripts/.launcher_settings.json` at runtime;
+that file is not tracked (the launcher falls back to built-in defaults if it is
+absent).
 
 Runs write their output to a `results/` folder (created on first run; not
 tracked in git).
@@ -116,24 +131,25 @@ the (long) command line for you and streams the run's output live.
 
 Output is written under `results/`, keyed by the run parameters.
 
-## Running the calibration check (from the terminal)
+## Running the solo model check
 
-`opinion_dynamics_v3_check.py` is a small standalone script, run directly from a
-terminal, that asks the model to rate a single statement on the −2..+2 scale a
-number of times. It is used to calibrate a model and prompt version before a full
-run.
+The solo check asks the model about a claim on its own — no personas, no network,
+no interactions — so each "agent" is an independent sample of the model's own
+prior on the topic. It uses the same native inference path and decoding options
+as a full run, so the solo numbers are directly comparable to in-network
+behaviour. This replaces the old standalone calibration script.
+
+From the launcher, set **Solo check: on** (the network, persona and RAG panels
+grey out, since they do not apply). Or from the terminal:
 
 ```bash
-python scripts/opinion_dynamics_v3_check.py \
-    --model qwen3:8b \
-    --version_set v102_llm_check_true \
-    --statement "We live in a computer simulation created by an advanced civilization"
+python scripts/opinion_dynamics_test_network_qwen.py --solo_check on \
+    -m qwen3:8b -agents 10 -steps 5 -v v130_llm_check_true
 ```
 
-It reads its prompt from
-`prompts/opinion_dynamics/Flache_2017/<version>/<version_set>/` and writes the
-ratings to a CSV (`llm_check.csv` by default). Run with `--help` to see all
-options (model, temperature, number of repeats, seed, output path).
+Each of the `-agents` samples answers the version's `step1_report.md`; the run
+writes an `*_opinion_change_*.csv` (same shape the eval tools read) plus a
+`*_solo_check_metrics.json` with the full config.
 
 ## Creating prompts from the script
 
@@ -200,11 +216,165 @@ root is the master list of agent descriptions used when generating prompts.
 
 ## Plotting a run
 
-After a run, produce network figures and animations with:
+The easiest way is the plotting GUI. Point it at a results folder and it finds
+every finished run inside, reads back each run's parameters from its file names
+(agents, steps, seed, version, date, distribution, model — nothing typed by
+hand), and plots the ones you tick:
+
+```bash
+python scripts/plot_launcher.py
+```
+
+Or run the plotting script directly on one run:
 
 ```bash
 python scripts/main_plot_network.py --help
 ```
 
-It reads a finished run's output and renders the network with agents coloured by
-their opinion, along with animations of how those opinions change over the run.
+It reads a finished run's output and produces the full figure set: opinion
+distributions (initial/final, an opinion×time heatmap, a fragmentation curve,
+a rating-share streamgraph, and a distribution ridgeline), belief trajectories,
+B/D/P time series, an empirical Markov transition matrix, network diagnostics
+(degree, assortativity over time, hub assignment, ego networks), mechanism plots
+(influence matrix, argument-theme effectiveness, RAG evidence direction), and
+animations of the network and the distribution. All figures share one modern
+style, and each is skipped with a note if its source CSV is absent, so the run
+never crashes. Full guide: `docs/main_plot_guide.md`.
+
+To compare several runs on one figure (mean opinion, diversity, fragmentation,
+and final distribution overlaid, one colour per run):
+
+```bash
+python scripts/compare_runs.py            # GUI: pick 2-6 run folders
+python scripts/compare_runs.py A B C --out cmp.png   # or from the CLI
+```
+
+Run outputs use a compact naming scheme (`<out>_<agents>_<steps>_v<ver>_<mode>`,
+e.g. `..._v119_strong_r`, with the short mode abbreviations in
+`scripts/run_naming.py`). Every tool also reads the older long naming, so runs
+made before the change keep working.
+
+## Extended toolkit — programme expansion
+
+Everything below lives in `tools/` and is **not part of the diploma thesis**. The thesis uses
+the simulation, the launcher, and the plotting above. This toolkit is an ongoing expansion of the
+programme — an offline ecosystem for evaluating and probing runs, and for the retrieval-architecture
+experiments — kept in the repo so the work can grow past the thesis into follow-up studies. It is
+tested (unit / mock / functional on real run files), but it did not produce any thesis result.
+Items marked \* also need a running Ollama for their full mode; without it they fall back to a
+dependency-free lexical mode or are skipped.
+
+Each tool runs standalone from the command line, and most are also reachable from one GUI
+(`tools/eval_launcher.py`). Deep-dive docs live in `docs/` (`eval_judge_guide.md`,
+`ui_launcher_guide.md`, `main_plot_guide.md`, `multihop_corpus_spec.md`).
+
+### Evaluation and reporting
+
+`tools/eval_runs.py` — the analysis harness. Give it run folders (or any parent folder; it scans
+recursively and finds every run inside by its `*opinion_change*.csv`) and it computes per-run
+B/D/P trajectories, convergence, holds/repairs/cleanups/fallbacks/leaks, agent-level bootstrap
+confidence intervals, pairwise deltas and figures, writing `eval_report.md` + `aggregate.csv`.
+
+```bash
+python tools/eval_runs.py results/opinion_dynamics/Flache_2017/qwen3_8b --out eval_out
+```
+
+`tools/master_report.py` — aggregates a master CSV (accumulated by `eval_runs --append-csv`) into
+a per-condition summary: mean ± std across runs, i.e. the real seed-to-seed dispersion that
+within-run CIs cannot show. One row per condition instead of one per run.
+
+```bash
+python tools/master_report.py master.csv --out master_out
+```
+
+`tools/eval_launcher.py` — one Tkinter GUI over the whole toolkit: pick runs, then run the
+comparison, the judge, the semantic analysis, the inference-emergence and scale metrics, and the
+HTML viewers, each with an explanation next to every option.
+
+```bash
+python tools/eval_launcher.py
+```
+
+### LLM-as-judge and text-space metrics
+
+`tools/judge_runs.py` \* — a read-only LLM judge that scores tweets (stance match, closed-world
+leak, quality) and responses (direction support, leak, quality). It inherits context from the run
+files themselves (claim, config, personas, verbatim world rules and bias wording, and the exact
+RAG snippets each agent was shown), runs cross-family by default (a Llama judge for Qwen runs),
+uses no chain-of-thought, greedy decoding and a SHA-256 cache so re-runs are free, and can export
+a calibration sheet for human anchoring. Always `--dry-run` first to inspect the prompt.
+
+```bash
+python tools/judge_runs.py <run_folder> --dry-run --sample 120 --context full
+```
+
+`tools/semantic_analysis.py` \* — measures what the −2..+2 ratings cannot: homogenisation (are
+agents starting to say the same thing?), text convergence over time, stance separation (do FOR and
+AGAINST posts actually read differently?), and self-repetition. `tfidf` backend runs anywhere;
+`ollama` backend uses real embeddings.
+
+```bash
+python tools/semantic_analysis.py <run_folder> --backend tfidf
+```
+
+`tools/scale_infoloss.py` — quantifies how much of the text the integer scale compresses away:
+variance explained (R²), leave-one-out text→rating recovery (are the five levels textually real?),
+flat-rating drift, and distinct "voices" per rating.
+
+```bash
+python tools/scale_infoloss.py <run_folder> [--backend ollama]
+```
+
+### Retrieval-architecture experiments
+
+A multi-hop evidence corpus lets retrieval itself become the experimental variable. Snippets are
+individually thin but connect into reasoning chains through shared entities; the ground truth
+(chains, implied conclusions, null probes) is kept in a separate evaluation-only file.
+
+`tools/retrievers.py` — three retrieval architectures over the same corpus: `lexical` (token
+overlap), `dense`\* (embedding cosine), and `graph` (entity-graph chain recovery). The difference
+between them *is* the variable.
+
+`tools/corpus_lint.py` — validity linter for the corpus: field/id integrity, tag↔text
+consistency, chain reachability, shared-vocabulary and balance warnings. Run it after editing the
+corpus.
+
+```bash
+python tools/corpus_lint.py prompts/opinion_dynamics/Flache_2017/content/rag_corpus/multihop_v119.jsonl
+```
+
+`tools/chain_benchmark.py` — the offline gate: before any simulation spends compute, it checks
+whether `graph` actually beats `lexical`/`dense` at recovering full chains from the corpus's ground
+truth. Writes `chain_benchmark.md` with a PASS/REWORK verdict.
+
+```bash
+python tools/chain_benchmark.py <corpus>.jsonl --backends lexical,graph,dense
+```
+
+`tools/inference_emergence.py` \* — do agents articulate conclusions written *nowhere* in the
+corpus? It scores every tweet against each chain's implied conclusion, with a threshold
+auto-calibrated from null probes (plausible-sounding claims the corpus does not support). Runs that
+never saw the corpus act as a negative control.
+
+```bash
+python tools/inference_emergence.py <run_folder> --groundtruth <corpus>.groundtruth.json
+```
+
+### Interactive viewers
+
+`tools/build_viewer.py` / `tools/build_ab_viewer.py` — self-contained offline HTML viewers: a
+single-run viewer (network + time scrubber + per-agent tweets/replies panel) and an A/B viewer
+(two runs side by side on one synchronized scrubber). No dependencies at view time.
+
+```bash
+python tools/build_viewer.py <run_folder>          # writes <run>_viewer.html
+python tools/build_ab_viewer.py <run_a> <run_b>    # writes an A/B viewer
+```
+
+### Solo model check
+
+Not a tool but a mode of the main script: it asks the model about a claim on its own — no
+personas, no network, no interactions — so each "agent" is an independent sample of the model's
+own prior. Set **Solo check: on** in the launcher, or pass `--solo_check on` to
+`opinion_dynamics_test_network_qwen.py`. It uses the same native inference path and decoding
+options as a full run, so the solo numbers are directly comparable to in-network behaviour.

@@ -37,12 +37,9 @@ except Exception:  # pragma: no cover - fallback keeps old launchers usable
         "generic": {
             "label": "Generic topic",
             "fields": [
-                {"key": "topic_specific_trust", "label": "Topic-specific trust", "importance": "medium", "values": _LEVEL_VALUES},
-                {"key": "topic_specific_suspicion", "label": "Topic-specific suspicion", "importance": "medium", "values": _LEVEL_VALUES},
                 {"key": "topic_specific_expertise_weight", "label": "Expertise weight", "importance": "medium", "values": _LEVEL_VALUES},
                 {"key": "topic_specific_anomaly_weight", "label": "Anomaly weight", "importance": "medium", "values": _LEVEL_VALUES},
                 {"key": "topic_specific_motive_weight", "label": "Motive weight", "importance": "medium", "values": _LEVEL_VALUES},
-                {"key": "topic_specific_speculation_tolerance", "label": "Speculation tolerance", "importance": "medium", "values": _LEVEL_VALUES},
             ],
         },
     }
@@ -598,6 +595,15 @@ def get_preset_profile_by_name(profile_name: str) -> dict[str, Any] | None:
 
 
 def _profile_pool_for_mode(selected_profile: dict[str, Any], mode: str) -> list[dict[str, Any]]:
+    '''Candidate profiles per distribution mode.
+
+    all         every agent gets the selected profile (as configured in the UI).
+    random      uniform draw from the PRESET library; the selected profile's
+                custom edits are not part of the pool unless it is a preset.
+    equal       equal split of the preset library (same pool note as random).
+    more / most selected profile (with its edits) weighted 55% / 80%, the
+                remaining presets share the rest.
+    '''
     mode = (mode or "all").strip().lower()
     presets = [deepcopy(p) for p in DEFAULT_PROFILES.get("profiles", [])]
     if mode == "all":
@@ -738,6 +744,8 @@ def derive_topic_from_core(core: dict[str, Any]) -> dict[str, str]:
 
 
 def derive_flavor_from_core(core: dict[str, Any]) -> dict[str, str]:
+    '''Neutral flavor defaults; only age_group gets a stable default. The core
+    argument is accepted for symmetry with derive_topic_from_core.'''
     return {
         "age_group": "30_39",
         "gender": "",
@@ -938,6 +946,7 @@ def _mini_background(name: str, core: dict[str, Any], topic: dict[str, Any], fla
         pieces.append(prior[:1].upper() + prior[1:] + ("." if not prior.endswith(".") else ""))
     return " ".join(pieces)
 
+
 def _norm_trait_value(value: Any) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
@@ -977,13 +986,6 @@ def _topic_trait_sentence(topic_root: str, key: str, label: str, value: str) -> 
                 return "Does not automatically treat code or information analogies as evidence about reality."
             return "Finds computational analogies understandable, but not decisive by themselves."
 
-        if k == "testability_preference":
-            if _is_high(v):
-                return "Requires direct testability before strongly accepting speculative claims."
-            if _is_low(v):
-                return "Can take coherent philosophical arguments seriously even when direct tests are limited."
-            return "Prefers testable claims, but can still weigh coherent speculation."
-
         if k == "anthropic_reasoning_comfort":
             if _is_high(v):
                 return "Is comfortable considering observer-count and reference-class arguments."
@@ -1005,31 +1007,10 @@ def _topic_trait_sentence(topic_root: str, key: str, label: str, value: str) -> 
                 return "Leans physicalist about consciousness and is cautious about simulated-mind claims."
             return "Is uncertain about consciousness, so consciousness-based arguments can move either way."
 
-        if k == "metaphysical_speculation_tolerance":
-            if _is_high(v):
-                return "Is willing to evaluate speculative metaphysical claims if they are coherent."
-            if _is_low(v):
-                return "Has low tolerance for metaphysical speculation without concrete tests."
-            return "Can consider metaphysical speculation, but does not let it dominate concrete evidence."
-
     # -----------------------------
     # v119: Twin Towers / 9-11
     # -----------------------------
     if root == "v119":
-        if k == "security_state_suspicion":
-            if _is_high(v):
-                return "Is more receptive to arguments about hidden security-state incentives or misconduct."
-            if _is_low(v):
-                return "Is reluctant to infer hidden security-state involvement without strong evidence."
-            return "Can consider security-state motive arguments, but needs them to be specific."
-
-        if k == "official_investigation_trust":
-            if _is_high(v):
-                return "Gives official investigations substantial weight unless specific contradictions are shown."
-            if _is_low(v):
-                return "Does not treat official investigations as automatically reliable."
-            return "Treats official investigations as relevant, but not final."
-
         if k == "geopolitical_motive_sensitivity":
             if _is_high(v):
                 return "Pays close attention to war, surveillance, and geopolitical motive arguments."
@@ -1051,24 +1032,10 @@ def _topic_trait_sentence(topic_root: str, key: str, label: str, value: str) -> 
                 return "Does not treat isolated anomalies as enough to overturn a broader explanation."
             return "Notices anomalies, but checks whether they connect to the central claim."
 
-        if k == "source_skepticism":
-            if _is_high(v):
-                return "Checks both official and alternative sources carefully before relying on them."
-            if _is_low(v):
-                return "Is less focused on source adversariality and more focused on the claim itself."
-            return "Pays some attention to source reliability on both sides."
-
     # -----------------------------
     # v52: moon landing
     # -----------------------------
     if root == "v52":
-        if k == "space_program_trust":
-            if _is_high(v):
-                return "Finds space-program capability and institutional technical records initially credible."
-            if _is_low(v):
-                return "Does not automatically trust space-program capability claims."
-            return "Treats space-program capability as plausible but still open to challenge."
-
         if k == "cold_war_motive_sensitivity":
             if _is_high(v):
                 return "Pays close attention to Cold War propaganda and prestige incentives."
@@ -1089,20 +1056,6 @@ def _topic_trait_sentence(topic_root: str, key: str, label: str, value: str) -> 
             if _is_low(v):
                 return "Does not treat visual anomalies as decisive unless they connect to a concrete mechanism."
             return "Notices visual anomalies, but checks whether they are central."
-
-        if k == "institutional_science_trust":
-            if _is_high(v):
-                return "Gives scientific and technical consensus substantial weight."
-            if _is_low(v):
-                return "Does not treat scientific consensus as automatically decisive."
-            return "Treats scientific consensus as relevant but still open to specific counterpoints."
-
-        if k == "media_manipulation_suspicion":
-            if _is_high(v):
-                return "Finds staged-media or public-deception arguments plausible enough to examine."
-            if _is_low(v):
-                return "Is skeptical of staged-media claims without concrete production evidence."
-            return "Can consider media-manipulation arguments, but needs specificity."
 
     # Generic fallback for unknown future topics.
     readable_value = _titleize_enum(str(value))
@@ -1295,6 +1248,8 @@ def render_persona_card(profile: dict[str, Any], agent_name: str, opinion: int) 
     }
 
     return "\n".join(lines), legacy
+
+
 def load_agent_names(names_source_csv: str, rng: random.Random, n_agents: int) -> list[str]:
     p = Path(names_source_csv)
     if not p.exists():
@@ -1322,7 +1277,10 @@ def load_agent_names(names_source_csv: str, rng: random.Random, n_agents: int) -
         return [f"agent_{i:02d}" for i in range(n_agents)]
 
 
-def _build_beliefs(n_agents: int, opinion_strategy: str, custom_counts, rng: random.Random) -> list[int]:
+def _build_beliefs(n_agents: int, opinion_strategy: str, custom_counts: "dict[int, int] | None", rng: random.Random) -> list[int]:
+    '''Initial opinions for n agents. custom_counts maps opinion value -> count
+    (e.g. {-2: 5, ..., 2: 5}); a plain list would be misread (negative values
+    would index from the end), so callers must pass the mapping form.'''
     opinion_strategy = (opinion_strategy or "uniform").strip().lower()
     if opinion_strategy == "uniform":
         base = n_agents // len(OPINION_VALUES)

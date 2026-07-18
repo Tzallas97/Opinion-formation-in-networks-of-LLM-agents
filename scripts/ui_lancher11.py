@@ -134,11 +134,12 @@ def _persona_state_label_lines(profile_state: dict | None) -> list[tuple[str, st
     use_topic_causal = bool(state.get('use_topic_causal', False))
     use_topic_background = bool(state.get('use_topic_linked', False))
     use_flavor = bool(state.get('use_flavor_only', False))
+    use_expressive = bool(state.get('use_expressive_style', False))  # separate expressive/debate-style layer (validator permissions)
     show_label = bool(state.get('show_profile_label', True))
 
-    if use_core or use_topic_causal or use_topic_background or use_flavor:
+    if use_core or use_topic_causal or use_topic_background or use_flavor or use_expressive:
         rows.append(('persona_weighting_rule', 'Persona weighting rule', PERSONA_IMPORTANCE_RULE))
-        rows.append(('persona_layers_enabled', 'Persona layers enabled', f"core={int(use_core)}; topic_causal={int(use_topic_causal)}; topic_background={int(use_topic_background)}; flavor={int(use_flavor)}"))
+        rows.append(('persona_layers_enabled', 'Persona layers enabled', f"core={int(use_core)}; topic_causal={int(use_topic_causal)}; topic_background={int(use_topic_background)}; flavor={int(use_flavor)}; expressive={int(use_expressive)}"))
 
     add('epistemic_profile', 'Epistemic profile', 'epistemic_profile_label', enabled=(use_core and show_label))
     add('institutional_trust', 'Institutional trust', 'institutional_trust', enabled=use_core)
@@ -146,10 +147,10 @@ def _persona_state_label_lines(profile_state: dict | None) -> list[tuple[str, st
     add('evidence_style', 'Evidence style', 'evidence_style', enabled=use_core)
     add('official_narrative_suspicion', 'Official-narrative suspicion', 'official_narrative_suspicion', enabled=use_core)
     add('openness_to_update', 'Openness to update', 'openness_to_update', enabled=use_core)
-    add('value_orientation', 'Value orientation', 'value_orientation', enabled=use_core)
-    add('social_conformity', 'Social conformity', 'social_conformity', enabled=use_core)
-    add('agency_vs_fatalism', 'Agency vs fatalism', 'agency_vs_fatalism', enabled=use_core)
-    add('conflict_style', 'Conflict style', 'conflict_style', enabled=use_core)
+    # Expressive/debate-style layer (validator permissions only, not causal). social_conformity retired (inert).
+    add('value_orientation', 'Value orientation', 'value_orientation', enabled=use_expressive)
+    add('agency_vs_fatalism', 'Agency vs fatalism', 'agency_vs_fatalism', enabled=use_expressive)
+    add('conflict_style', 'Conflict style', 'conflict_style', enabled=use_expressive)
 
     if use_topic_causal:
         fieldset_label = state.get('topic_fieldset_label') or get_topic_label(state.get('topic_version', 'generic'))
@@ -203,7 +204,6 @@ INTERNAL_PERSONA_AUDIT_LINE_PREFIXES = (
     "official narrative suspicion:",
     "openness to update:",
     "value orientation:",
-    "social conformity:",
     "agency vs fatalism:",
     "conflict style:",
     # Raw topic-background/flavor audit rows. Clean card uses sectioned natural lines.
@@ -231,7 +231,7 @@ def _audit_field_labels_for_stripping() -> set[str]:
     labels = {
         "epistemic profile", "institutional trust", "uncertainty tolerance",
         "evidence style", "official-narrative suspicion", "official narrative suspicion",
-        "openness to update", "value orientation", "social conformity",
+        "openness to update", "value orientation",
         "agency vs fatalism", "conflict style", "topic version", "topic fields",
         "topic fieldset", "topic-causal fieldset", "topic-causal profile",
         "topic profile", "occupation", "education", "education level",
@@ -369,6 +369,23 @@ DEFAULT_MODELS = [
     "none",
 ]
 
+
+# Model thinking capability (keep in sync with MODEL_PROFILES in the simulation script).
+# Only EXPLICITLY-known no-thinking models get their Think mode disabled; unknown models
+# stay enabled so a new/capable model is never wrongly restricted.
+_THINKING_MODELS = ("qwen3", "qwq", "deepseek-r1")
+_NO_THINKING_MODELS = ()  # e.g. ("llama3", "qwen2.5") to disable Think mode for those
+
+
+def _model_thinking_capability(model):
+    """True (known-thinking), False (known-no-thinking), or None (unknown -> unrestricted)."""
+    m = str(model or "").strip().lower()
+    if any(k in m for k in _NO_THINKING_MODELS):
+        return False
+    if any(k in m for k in _THINKING_MODELS):
+        return True
+    return None
+
 # Prompt folders follow: prompts/opinion_dynamics/Flache_2017/vXX/vXX_<mode>/
 DEFAULT_PROMPT_VERSIONS = ["v37", "v52", "v113","v119", "v130"]
 DEFAULT_PROMPT_MODES = [
@@ -398,6 +415,21 @@ def _find_project_root(start: Path) -> Path:
 LAUNCHER_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = _find_project_root(LAUNCHER_DIR)
 PROMPT_ROOT = PROJECT_ROOT / "prompts" / "opinion_dynamics" / "Flache_2017"
+
+
+def _detect_prompt_versions():
+    """Prompt version folders (vNN) actually present under PROMPT_ROOT, sorted
+    numerically. Falls back to DEFAULT_PROMPT_VERSIONS if the scan finds nothing."""
+    try:
+        found = [p.name for p in PROMPT_ROOT.iterdir()
+                 if p.is_dir() and re.fullmatch("v[0-9]+", p.name)]
+        found.sort(key=lambda v: int(v[1:]))
+        return found or list(DEFAULT_PROMPT_VERSIONS)
+    except Exception:
+        return list(DEFAULT_PROMPT_VERSIONS)
+
+
+PROMPT_VERSIONS = _detect_prompt_versions()
 CONFIG_DIR = PROJECT_ROOT / "scripts" / "config"
 PERSONA_SCHEMA_PATH = CONFIG_DIR / "persona_schema.json"
 PERSONA_PROFILES_PATH = CONFIG_DIR / "persona_profiles.json"
@@ -435,7 +467,7 @@ DEFAULT_SETTINGS = {
     "agents": "25",
     "steps": "150",
     "out": "seed50",
-    "prompt_version": DEFAULT_PROMPT_VERSIONS[0] if DEFAULT_PROMPT_VERSIONS else "v52",
+    "prompt_version": PROMPT_VERSIONS[0] if PROMPT_VERSIONS else "v52",
     "prompt_mode": DEFAULT_PROMPT_MODES[0] if DEFAULT_PROMPT_MODES else "default",
     "fact_pack_mode": "off",
     "world": "closed",
@@ -485,6 +517,11 @@ DEFAULT_SETTINGS = {
     "frequency_penalty": "",
     "max_step_change": "1",
     "allowed_update_mode": "assimilation_only",
+    "validation_strictness": "strict",
+    "wrong_side_explanation_requery": "off",
+    "deterministic": "off",
+    "structured_output": "off",
+    "solo_check": "off",
     "same_side_edge_unlock_hits": "2",
     "same_rating_step3_mode": "skip_tweet_local",
 
@@ -534,6 +571,8 @@ DEFAULT_SETTINGS = {
     "persona_use_topic_causal": False,
     "persona_use_topic_linked": False,
     "persona_use_flavor_only": False,
+    # Expressive/debate-style layer: validator permissions only (outcome/fatalistic/combative wording); off by default so it never confounds the causal comparison.
+    "persona_use_expressive_style": False,
     "persona_topic_mode": "off",
     "persona_topic_causal_profile_choice": "Manual",
     "persona_topic_profile_choice": "Manual",  # compatibility alias for topic-causal profile
@@ -547,7 +586,6 @@ DEFAULT_SETTINGS = {
     "persona_official_narrative_suspicion": "medium",
     "persona_openness_to_update": "medium",
     "persona_value_orientation": "balanced",
-    "persona_social_conformity": "medium",
     "persona_agency_vs_fatalism": "balanced",
     "persona_conflict_style": "balanced",
     "persona_occupation": "",
@@ -587,7 +625,7 @@ DEFAULT_SETTINGS = {
 
 OPINION_VALUES = [-2, -1, 0, 1, 2]
 
-# Categories as used by your network_models.py
+# Categories as used by network_models.py
 POLITICAL_CATS = ["far_left", "left", "center_left", "center", "center_right", "right", "far_right"]
 EDUCATION_CATS = ["high_school", "some_college", "bachelor", "master", "phd"]
 GENDER_CATS = ["male", "female"]
@@ -819,7 +857,7 @@ def generate_list_agent_descriptions_csv(
 
     names = load_agent_names(names_source_csv, rng, n_agents)
 
-    # --- Category vocab that your v5 script parses robustly ---
+    # --- Category vocab in the text form the simulator's CSV parser accepts ---
     POL_TXT = [
         "Far Left",
         "Strong Democrat",
@@ -892,7 +930,7 @@ def generate_list_agent_descriptions_csv(
             "label": "Suspicious anti-institutional skeptic",
             "institutional_trust": "Low",
             "uncertainty_tolerance": "Low",
-            "evidence_style": "Suspicion-first",
+            "evidence_style": "Coherence-first",
             "official_narrative_suspicion": "High",
             "openness_to_update": "Low",
             "background": "They are quick to notice anomalies, distrust polished official stories, and do not revise their view easily.",
@@ -910,7 +948,7 @@ def generate_list_agent_descriptions_csv(
             "label": "Authority-leaning stabilizer",
             "institutional_trust": "High",
             "uncertainty_tolerance": "Low",
-            "evidence_style": "Authority-first",
+            "evidence_style": "Source-first",
             "official_narrative_suspicion": "Low",
             "openness_to_update": "Low",
             "background": "They rely heavily on established records and do not move easily unless the case feels unusually strong.",
@@ -1638,17 +1676,18 @@ class LauncherUI(tk.Tk):
 
         ttk.Label(cfg_run, text="Steps:").grid(row=1, column=4, sticky="w")
         self.steps_var = tk.StringVar(value=self._settings["steps"])
-        ttk.Entry(cfg_run, textvariable=self.steps_var, width=10).grid(row=1, column=5, sticky="w", padx=6)
+        self._steps_entry = ttk.Entry(cfg_run, textvariable=self.steps_var, width=10)
+        self._steps_entry.grid(row=1, column=5, sticky="w", padx=6)
 
         ttk.Label(cfg_run, text="Out:").grid(row=2, column=0, sticky="w", pady=6)
         self.out_var = tk.StringVar(value=self._settings["out"])
-        ttk.Entry(cfg_run, textvariable=self.out_var, width=24).grid(row=2, column=1, sticky="w", padx=6)
+        ttk.Entry(cfg_run, textvariable=self.out_var, width=24).grid(row=2, column=1, sticky="we", padx=6, ipady=4)
 
         # Prompt selection
         ttk.Label(cfg_run, text="Prompt version:").grid(row=2, column=2, sticky="w")
         self.prompt_version_var = tk.StringVar(value=self._settings["prompt_version"])
         ttk.Combobox(cfg_run, textvariable=self.prompt_version_var,
-                     values=DEFAULT_PROMPT_VERSIONS, width=12, state="readonly").grid(row=2, column=3, sticky="w", padx=6)
+                     values=PROMPT_VERSIONS, width=12, state="readonly").grid(row=2, column=3, sticky="w", padx=6)
 
         ttk.Label(cfg_run, text="Prompt mode:").grid(row=2, column=4, sticky="w")
         self.prompt_mode_var = tk.StringVar(value=self._settings["prompt_mode"])
@@ -1673,7 +1712,8 @@ class LauncherUI(tk.Tk):
         self.world_combo.grid(row=3, column=1, sticky="w", padx=6)
         ttk.Label(
             cfg_run,
-            text="(closed_strict = prompt-only facts; closed_strict_rag = retrieved snippets from local corpus; open_rag = retrieved snippets in open-world mode)",
+            text="closed* = agents may use ONLY what the prompt shows (keeps social dynamics measurable); closed_strict_rag adds retrieved snippets; open* = the model may use its own knowledge (factual claims then converge on their own). Enforcement is SOFT: leaks are logged, never retried.",
+            style="Muted.TLabel", wraplength=760, justify="left",
         ).grid(row=3, column=2, columnspan=4, sticky="w")
 
         ttk.Label(cfg_run, text="Fact pack mode:").grid(row=4, column=0, sticky="w", pady=6)
@@ -1685,7 +1725,8 @@ class LauncherUI(tk.Tk):
             width=14,
             state="readonly",
         ).grid(row=4, column=1, sticky="w", padx=6)
-        ttk.Label(cfg_run, text="(runtime injection from external fact_packs.py)").grid(row=4, column=2, columnspan=4, sticky="w")
+        ttk.Label(cfg_run, text="Curated per-topic evidence injected at runtime (separate from RAG; from fact_packs.py). Mode picks the direction: off / full / supportive / criticisms / contextual. In closed worlds shown material carries outsized weight - treat as an experiment lever.",
+                  style="Muted.TLabel", wraplength=760, justify="left").grid(row=4, column=2, columnspan=4, sticky="w")
 
         # Memory mode
         ttk.Label(cfg_run, text="Memory:").grid(row=5, column=0, sticky="w", pady=6)
@@ -1710,7 +1751,8 @@ class LauncherUI(tk.Tk):
             state="readonly"
         )
         self.light_memory_threshold_combo.grid(row=5, column=3, sticky="w", padx=6)
-        ttk.Label(cfg_run, text="(light = truncated history + belief path; off = ignore tweet/response history)").grid(row=5, column=4, columnspan=2, sticky="w")
+        ttk.Label(cfg_run, text="enabled = agent remembers its own past tweets/responses; light = truncated history + belief path (Light threshold = how many recent items are kept); off = memoryless agent.",
+                  style="Muted.TLabel", wraplength=520, justify="left").grid(row=5, column=4, columnspan=2, sticky="w")
         try:
             self.memory_var.trace_add("write", lambda *_: self._update_light_memory_threshold_state())
         except Exception:
@@ -1727,7 +1769,8 @@ class LauncherUI(tk.Tk):
             width=12,
             state="readonly"
         ).grid(row=6, column=1, sticky="w", padx=6)
-        ttk.Label(cfg_run, text="(auto: minimal when Memory=off; full when enabled)").grid(row=6, column=2, columnspan=4, sticky="w")
+        ttk.Label(cfg_run, text="Console verbosity only (what the Logs tab prints) - zero effect on results. auto: minimal when Memory=off, full when enabled.",
+                  style="Muted.TLabel", wraplength=760, justify="left").grid(row=6, column=2, columnspan=4, sticky="w")
 
         # Whether to inject history into the LLM prompt (off keeps LLM Markovian)
         ttk.Label(cfg_run, text="LLM history:").grid(row=7, column=0, sticky="w", pady=6)
@@ -1739,7 +1782,8 @@ class LauncherUI(tk.Tk):
             width=12,
             state="readonly"
         ).grid(row=7, column=1, sticky="w", padx=6)
-        ttk.Label(cfg_run, text="(off = Markovian; trace can still be full)").grid(row=7, column=2, columnspan=4, sticky="w")
+        ttk.Label(cfg_run, text="Whether earlier turns are injected into the LLM context. off = Markovian (model sees only the current prompt - our default); on = past turns included; auto follows Memory. CHANGES BEHAVIOUR, not just logging.",
+                  style="Muted.TLabel", wraplength=760, justify="left").grid(row=7, column=2, columnspan=4, sticky="w")
 
         # Save native shadow-thinking payloads on hard failures (if the script supports it)
         ttk.Label(cfg_run, text="Debug native thinking:").grid(row=8, column=0, sticky="w", pady=6)
@@ -1751,9 +1795,25 @@ class LauncherUI(tk.Tk):
             width=12,
             state="readonly"
         ).grid(row=8, column=1, sticky="w", padx=6)
-        ttk.Label(cfg_run, text="(on = save native shadow debug/thinking on hard failures when supported)").grid(row=8, column=2, columnspan=4, sticky="w")
+        ttk.Label(cfg_run, text="on = when a step hard-fails, the model's raw thinking payload is saved for debugging (supported scripts only). No effect on results; leave off unless investigating failures.",
+                  style="Muted.TLabel", wraplength=760, justify="left").grid(row=8, column=2, columnspan=4, sticky="w")
 
 
+
+        ttk.Label(cfg_run, text="Solo check:").grid(row=9, column=0, sticky="w", pady=6)
+        self.solo_check_var = tk.StringVar(value=self._settings.get("solo_check", "off"))
+        ttk.Combobox(
+            cfg_run,
+            textvariable=self.solo_check_var,
+            values=["off", "on"],
+            width=12,
+            state="readonly"
+        ).grid(row=9, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_run, text="on = ask the model ALONE about the claim (no personas, no network, no interactions): each 'agent' is an independent sample answering step1_report.md. Measures the model's own prior on the topic - the baseline for cross-model comparisons. Uses the SAME native inference path and decoding options as normal runs, so numbers are comparable. Network/RAG/persona settings are ignored while on. (Replaces the old terminal-only v3_check script.) While on, the sections that do not apply (network, personas, RAG, world/bias, step overrides, Steps) are greyed out automatically; Steps is ignored - the number of independent samples = Agents.",
+                  style="Muted.TLabel", wraplength=760, justify="left").grid(row=9, column=2, columnspan=4, sticky="w")
+
+        ttk.Label(cfg_run, text="Script: which main runs (only test_network_qwen works from here; the old v3_check is now the 'Solo check' option above).  Seed: RNG for network build + interaction order - same seed = repeatable run.  Agents / Steps: population size and number of interactions (1 speaker->listener per step).  Out: the run-folder name under results/.  Prompt version: template set = topic + bias level (v52 moon, v119 9/11, v130 simulation; *_confirmation_bias = biased agents, strong_ = heavily; *_reverse = claim worded from the conspiracy side).  Prompt mode: which template flow variant is used.",
+                  style="Muted.TLabel", wraplength=1150, justify="left").grid(row=10, column=0, columnspan=6, sticky="w", pady=(8, 0))
 
         # grid weights so script combobox stretches
         try:
@@ -1765,6 +1825,7 @@ class LauncherUI(tk.Tk):
         # Global constraints (these are NOT step-specific)
         # -----------------------------
         cfg_global = ttk.LabelFrame(tab_run, text="Global constraints", padding=12)
+        self._register_solo_irrelevant_frame(cfg_global)
         cfg_global.pack(fill="x", pady=(10, 0))
 
         ttk.Label(cfg_global, text="Model:").grid(row=0, column=0, sticky="w", pady=6)
@@ -1774,18 +1835,20 @@ class LauncherUI(tk.Tk):
 
         ttk.Label(cfg_global, text="Think mode:").grid(row=0, column=2, sticky="w", padx=(18, 0))
         self.think_mode_var = tk.StringVar(value=self._settings.get("think_mode", "off"))
-        ttk.Combobox(
+        self.think_mode_combo = ttk.Combobox(
             cfg_global,
             textvariable=self.think_mode_var,
             values=["off", "on", "step3_only", "step2_only"],
             width=12,
             state="readonly",
-        ).grid(row=0, column=3, sticky="w", padx=6)
+        )
+        self.think_mode_combo.grid(row=0, column=3, sticky="w", padx=6)
 
         ttk.Label(cfg_global, text="Max step change:").grid(row=1, column=0, sticky="w", pady=6)
         self.max_step_change_var = tk.StringVar(value=self._settings.get("max_step_change", "1"))
         ttk.Combobox(cfg_global, textvariable=self.max_step_change_var, values=["1", "2"], width=8, state="readonly").grid(row=1, column=1, sticky="w", padx=6)
-        ttk.Label(cfg_global, text="(Qwen/Ollama thinking control)", style="Muted.TLabel").grid(row=0, column=4, columnspan=2, sticky="w")
+        ttk.Label(cfg_global, text="Chain-of-thought before answering (per step). SPECIAL CASE: step3 keeps thinking ALWAYS by design - on length failures num_predict is boosted instead of dropping thinking. Greys out for models with no thinking support (per-model registry).",
+                  style="Muted.TLabel", wraplength=520, justify="left").grid(row=0, column=4, columnspan=2, sticky="w")
 
         ttk.Label(cfg_global, text="Allowed update mode:").grid(row=1, column=2, sticky="w", padx=(18, 0))
         self.allowed_update_mode_var = tk.StringVar(value=self._settings.get("allowed_update_mode", "assimilation_only"))
@@ -1797,7 +1860,30 @@ class LauncherUI(tk.Tk):
             state="readonly",
         )
         self.allowed_update_mode_combo.grid(row=1, column=3, sticky="w", padx=6)
-        ttk.Label(cfg_global, text="(free_bounded allows one bounded step either direction)", style="Muted.TLabel").grid(row=1, column=4, columnspan=2, sticky="w")
+        ttk.Label(cfg_global, text="assimilation_only = listener may only move TOWARD the speaker (Flache assimilation); free_bounded = any direction within Max step change (our default). This choice also decides whether same-side unlock does anything - see below.",
+                  style="Muted.TLabel", wraplength=520, justify="left").grid(row=1, column=4, columnspan=2, sticky="w")
+        ttk.Label(cfg_global, text="Validation strictness:").grid(row=5, column=0, sticky="w", pady=6)
+        self.validation_strictness_var = tk.StringVar(value=self._settings.get("validation_strictness", "strict"))
+        self.validation_strictness_combo = ttk.Combobox(
+            cfg_global,
+            textvariable=self.validation_strictness_var,
+            values=["strict", "warn_only", "format_only"],
+            width=20,
+            state="readonly",
+        )
+        self.validation_strictness_combo.grid(row=5, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_global, text="strict = content/style checks may reject and re-ask (retries shape the text!); warn_only = everything logged, nothing re-asked; format_only = only FINAL_RATING/TWEET parsing enforced. Closed-world checks stay ON as warnings in every mode. Strictness measurably changes outcomes - report it as an experimental condition, and prefer warn_only when comparing models.",
+                  style="Muted.TLabel", wraplength=620, justify="left").grid(row=5, column=2, columnspan=3, sticky="w")
+        ttk.Label(cfg_global, text="Deterministic:").grid(row=6, column=0, sticky="w", pady=6)
+        self.deterministic_var = tk.StringVar(value=self._settings.get("deterministic", "off"))
+        ttk.Combobox(cfg_global, textvariable=self.deterministic_var, values=["off", "on"], width=8, state="readonly").grid(row=6, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_global, text="on = temperature 0 / greedy decoding for both steps: identical outputs on identical seed. Kills variety - use for debugging or exact replication, not for natural-sounding runs.",
+                  style="Muted.TLabel", wraplength=620, justify="left").grid(row=6, column=2, columnspan=3, sticky="w")
+        ttk.Label(cfg_global, text="Wrong-side explanation re-query:").grid(row=4, column=0, sticky="w", pady=6)
+        self.wrong_side_requery_var = tk.StringVar(value=self._settings.get("wrong_side_explanation_requery", "off"))
+        ttk.Combobox(cfg_global, textvariable=self.wrong_side_requery_var, values=["off", "on"], width=8, state="readonly").grid(row=4, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_global, text="If the explanation contradicts the chosen rating (wrong side / fragment / leak), ONE extra call rewrites the explanation only - THE RATING NEVER CHANGES. Cleans the transcript without touching the dynamics; adds ~1 call per bad explanation.",
+                  style="Muted.TLabel", wraplength=620, justify="left").grid(row=4, column=2, columnspan=3, sticky="w")
 
         ttk.Label(cfg_global, text="Same-side edge unlock hits:").grid(row=2, column=0, sticky="w", pady=6)
         self.same_side_edge_unlock_hits_var = tk.StringVar(value=self._settings.get("same_side_edge_unlock_hits", "2"))
@@ -1809,7 +1895,8 @@ class LauncherUI(tk.Tk):
             state="readonly",
         )
         self.same_side_edge_unlock_hits_combo.grid(row=2, column=1, sticky="w", padx=6)
-        self.same_side_edge_unlock_hits_help_label = ttk.Label(cfg_global, text="(0 = off; repeated same-side mild hits unlock ±2 from ±1)", style="Muted.TLabel")
+        self.same_side_edge_unlock_hits_help_label = ttk.Label(cfg_global, text="Counts consecutive same-side mild (±1) pushes; after N hits the ±2 edge unlocks from ±1. ONLY meaningful under assimilation_only: free_bounded already allows moving to the edge, so the code ignores this there (no-op) - keep 0 and it greys out. Why: without it, assimilation agents could never reach ±2 from repeated mild agreement.",
+                  style="Muted.TLabel", wraplength=620, justify="left")
         self.same_side_edge_unlock_hits_help_label.grid(row=2, column=2, columnspan=4, sticky="w")
         try:
             self._last_enabled_same_side_edge_unlock_hits = self.same_side_edge_unlock_hits_var.get().strip() or "2"
@@ -1817,6 +1904,11 @@ class LauncherUI(tk.Tk):
         except Exception:
             pass
         self._update_allowed_update_controls_state()
+        try:
+            self.model_var.trace_add("write", lambda *_: self._update_model_dependent_controls_state())
+        except Exception:
+            pass
+        self._update_model_dependent_controls_state()
 
         ttk.Label(cfg_global, text="Same-rating Step-3:").grid(row=3, column=0, sticky="w", pady=6)
         self.same_rating_step3_mode_var = tk.StringVar(value=self._settings.get("same_rating_step3_mode", "skip_tweet_local"))
@@ -1827,7 +1919,11 @@ class LauncherUI(tk.Tk):
             width=18,
             state="readonly",
         ).grid(row=3, column=1, sticky="w", padx=6)
-        ttk.Label(cfg_global, text="(applies only when the final allowed set has length 1 after unlock/expansion)", style="Muted.TLabel").grid(row=3, column=2, columnspan=4, sticky="w")
+        ttk.Label(cfg_global, text="What happens when only ONE rating is allowed anyway (nothing to decide): skip_tweet_local = skip the LLM call, log a local note (fast, saves tokens); skip_generic = skip with a generic line; llm = still call the LLM just for the explanation text. Applies only when the allowed set has length 1 after unlock/expansion.",
+                  style="Muted.TLabel", wraplength=620, justify="left").grid(row=3, column=2, columnspan=4, sticky="w")
+
+        ttk.Label(cfg_global, text="Model: global Ollama tag used by BOTH steps unless a per-step override is set (editable so freshly pulled tags work - but beware typos).  Max step change: how far one interaction can move an opinion (1 = one notch; the prompt's ALLOWED_FINAL_RATING_SET is built from this).",
+                  style="Muted.TLabel", wraplength=1150, justify="left").grid(row=7, column=0, columnspan=6, sticky="w", pady=(8, 0))
 
         # -----------------------------
         # LLM defaults (apply unless overridden per-step)
@@ -1875,13 +1971,14 @@ class LauncherUI(tk.Tk):
 
         ttk.Label(llm_global, text="(0 = off, blank = don't pass)", style="Muted.TLabel").grid(row=3, column=4, columnspan=2, sticky="w")
 
-        # -----------------------------
-        # Step-2 overrides (tweet generation)
-        # -----------------------------
+        ttk.Label(llm_global, text="Temperature: randomness (0 = deterministic, ~0.7 = normal variety).  Top-p / Top-k / Min-p: how wide the sampling pool is (nucleus cutoff / top-K tokens / probability floor; blank Min-p = not passed).  Repeat penalty + Repeat last N: discourage repeating the last N tokens (>1 = stronger).  Max tokens: output budget - THINKING MODELS SPEND THEIR REASONING FROM THIS TOO; too small = cut/empty outputs (step3 auto-boosts on length failures).  Presence/Frequency penalty: extra anti-repetition (blank = not passed).",
+                  style="Muted.TLabel", wraplength=1150, justify="left").grid(row=4, column=0, columnspan=6, sticky="w", pady=(8, 0))
+
         # -----------------------------
         # Step-2 overrides (tweet generation)
         # -----------------------------
         step2 = ttk.LabelFrame(tab_run, text="Step-2 LLM overrides (tweet) — blank = inherit global", padding=12)
+        self._register_solo_irrelevant_frame(step2)
         step2.pack(fill="x", pady=(10, 0))
 
         ttk.Label(step2, text="Temp:").grid(row=0, column=0, sticky="w")
@@ -1920,10 +2017,14 @@ class LauncherUI(tk.Tk):
         self.frequency_penalty_step2_var = tk.StringVar(value=self._settings.get("frequency_penalty_step2", ""))
         ttk.Entry(step2, textvariable=self.frequency_penalty_step2_var, width=10).grid(row=3, column=3, sticky="w", padx=6)
 
+        ttk.Label(step2, text="Step-2 writes the TWEETS. Blank fields inherit the global defaults above; set here to diverge only for tweet generation (e.g. slightly higher Temp for more varied posts).",
+                  style="Muted.TLabel", wraplength=1150, justify="left").grid(row=4, column=0, columnspan=6, sticky="w", pady=(8, 0))
+
         # -----------------------------
         # Step-3 overrides (belief update)
         # -----------------------------
         step3 = ttk.LabelFrame(tab_run, text="Step-3 LLM overrides (update) — blank = inherit global", padding=12)
+        self._register_solo_irrelevant_frame(step3)
         step3.pack(fill="x", pady=(10, 0))
 
         ttk.Label(step3, text="Temp:").grid(row=0, column=0, sticky="w")
@@ -1962,16 +2063,21 @@ class LauncherUI(tk.Tk):
         self.frequency_penalty_step3_var = tk.StringVar(value=self._settings.get("frequency_penalty_step3", ""))
         ttk.Entry(step3, textvariable=self.frequency_penalty_step3_var, width=10).grid(row=3, column=3, sticky="w", padx=6)
 
+        ttk.Label(step3, text="Step-3 decides the BELIEF UPDATE - the measurement core. Keep it conservative (low/inherited Temp). Step-3 always keeps thinking: a small Max tokens is auto-boosted on length failures instead of dropping the reasoning.",
+                  style="Muted.TLabel", wraplength=1150, justify="left").grid(row=4, column=0, columnspan=6, sticky="w", pady=(8, 0))
+
         # -----------------------------
         # RAG / Retrieval (run-level, only active when world=open_rag or closed_strict_rag)
         # -----------------------------
         rag = ttk.LabelFrame(tab_run, text="RAG / Retrieval (active only when World = open_rag or closed_strict_rag)", padding=12)
+        self._register_solo_irrelevant_frame(rag)
         rag.pack(fill="x", pady=(10, 0))
 
         ttk.Label(rag, text="Backend:").grid(row=0, column=0, sticky="w")
         self.rag_backend_var = tk.StringVar(value=self._settings.get("rag_backend", "off"))
-        self.rag_backend_combo = ttk.Combobox(rag, textvariable=self.rag_backend_var, values=["off", "simple"], width=12, state="readonly")
+        self.rag_backend_combo = ttk.Combobox(rag, textvariable=self.rag_backend_var, values=["off", "simple", "dense", "graph"], width=12, state="readonly")
         self.rag_backend_combo.grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(rag, text="(off = no retrieval. simple = word-overlap, transparent baseline. dense = embedding similarity via Ollama (pull nomic-embed-text first). graph = entity-chain retrieval for multi-hop corpora - needs <corpus>.graph.json next to the corpus. dense/graph = experimental retrieval-architecture conditions: pure top-k, content mode quotas do not apply.)", style="Muted.TLabel", wraplength=760, justify="left").grid(row=0, column=2, columnspan=4, sticky="w")
 
         ttk.Label(rag, text="Corpus path:").grid(row=1, column=0, sticky="w", pady=6)
         self.rag_corpus_path_var = tk.StringVar(value=self._settings.get("rag_corpus_path", ""))
@@ -2011,7 +2117,8 @@ class LauncherUI(tk.Tk):
         self.rag_max_chars_entry = ttk.Entry(rag, textvariable=self.rag_max_chars_var, width=10)
         self.rag_max_chars_entry.grid(row=3, column=5, sticky="w", padx=6)
 
-        ttk.Label(rag, text="Retrieval is not an LLM decoding stage. These control what text is fetched and injected into prompts.", style="Muted.TLabel").grid(row=5, column=0, columnspan=6, sticky="w")
+        ttk.Label(rag, text="Retrieval is not an LLM decoding stage - these control what text is fetched and injected into prompts.  Backend: off = no retrieval even in *_rag worlds; simple = lexical word-overlap scorer (deterministic + transparent; deliberately NOT a neural retriever, so evidence DIRECTION stays isolated from retriever quality).  Corpus path: folder of per-topic snippet files.  Top-k: how many snippets are shown (keep small, ~4, to not swamp the listener).  Max chars: hard cap on injected text.  Step2/Step3 query: what the lookup searches with (the claim, the tweet, or both; auto picks per step).  Content mode: which snippet direction passes the filter - full / balanced / supportive_only / criticism_only / context_only. THIS is the evidence-direction lever of the experiments; in closed worlds it can even flip hub influence.",
+                  style="Muted.TLabel", wraplength=1150, justify="left").grid(row=5, column=0, columnspan=6, sticky="w")
         try:
             rag.grid_columnconfigure(1, weight=1)
             rag.grid_columnconfigure(3, weight=1)
@@ -2027,6 +2134,7 @@ class LauncherUI(tk.Tk):
         # True open tools (active only when World = true_open)
         # -----------------------------
         true_open = ttk.LabelFrame(tab_run, text="True-open live tools (active only when World = true_open)", padding=12)
+        self._register_solo_irrelevant_frame(true_open)
         true_open.pack(fill="x", pady=(10, 0))
 
         ttk.Label(true_open, text="Web backend:").grid(row=0, column=0, sticky="w")
@@ -2069,7 +2177,8 @@ class LauncherUI(tk.Tk):
         self.notes_max_items_entry = ttk.Entry(true_open, textvariable=self.notes_max_items_var, width=10)
         self.notes_max_items_entry.grid(row=2, column=1, sticky="w", padx=6)
 
-        ttk.Label(true_open, text="web_only = live web search only; multi = web search + external notes. Step2 web queries use claim + current belief only. Notes are separate from ConversationChain memory.", style="Muted.TLabel").grid(row=3, column=0, columnspan=6, sticky="w")
+        ttk.Label(true_open, text="Only active in the true_open world - agents get LIVE internet tools, so runs are NOT reproducible.  Web backend: search provider (off disables).  Planner: heuristic decides WHEN an agent searches.  Tool mode: web_only = search only; multi = search + notes.  Web top-k / max chars: how many results and how much text get injected.  Step2 web: whether tweet-writing may also search (off / heuristic / always; queries use claim + current belief only).  Notes: lightweight external memory of past searches, capped by Notes max items (separate from ConversationChain memory).",
+                  style="Muted.TLabel", wraplength=1150, justify="left").grid(row=3, column=0, columnspan=6, sticky="w")
         try:
             true_open.grid_columnconfigure(1, weight=1)
             true_open.grid_columnconfigure(3, weight=1)
@@ -2108,7 +2217,8 @@ class LauncherUI(tk.Tk):
         self.multi_run_count_var = tk.StringVar(value=str(self._settings.get("multi_run_count", "5")))
         self.multi_run_count_entry = ttk.Entry(multi, textvariable=self.multi_run_count_var, width=10)
         self.multi_run_count_entry.grid(row=0, column=3, sticky="w", padx=6)
-        ttk.Label(multi, text="(off disables; same seed appends _1,_2,...; consecutive seeds increments seed and rewrites out seedXX)").grid(row=1, column=0, columnspan=4, sticky="w")
+        ttk.Label(multi, text="off = single run.  same seed = N repeats with the SAME seed (folders get _1,_2,... - measures LLM randomness only).  consecutive seeds = seed, seed+1, ... and the out-name's seedXX is rewritten per run (measures seed-to-seed variance - what the eval harness needs for CIs).  Runs: how many. Covers replication of ONE configuration; grids over conditions are a separate planned feature (ROADMAP).",
+                  style="Muted.TLabel", wraplength=1000, justify="left").grid(row=1, column=0, columnspan=4, sticky="w")
 
         try:
             multi.grid_columnconfigure(3, weight=1)
@@ -2144,6 +2254,7 @@ class LauncherUI(tk.Tk):
         # =============================
 
         persona = ttk.LabelFrame(tab_personas, text="Personas (creates NEW list_agent_descriptions.csv each run)", padding=12)
+        self._register_solo_irrelevant_frame(persona)
         persona.pack(fill="x")
 
         self.use_personas_var = tk.BooleanVar(value=bool(self._settings["use_personas"]))
@@ -2174,7 +2285,7 @@ class LauncherUI(tk.Tk):
         ttk.Entry(persona, textvariable=self.names_source_var, width=40).grid(row=2, column=1, sticky="w", padx=6, columnspan=3)
 
         # Classic preset controls (hidden when JSON persona mode is active)
-        self.classic_persona_frame = ttk.LabelFrame(persona, text="Classic preset controls", padding=8)
+        self.classic_persona_frame = ttk.LabelFrame(persona, text="Classic preset controls (the active path while JSON persona profiles are OFF)", padding=8)
         self.classic_persona_frame.grid(row=3, column=0, columnspan=4, sticky="we", pady=(8, 0))
 
         ttk.Label(self.classic_persona_frame, text="Age preset ▼").grid(row=0, column=0, sticky="w", pady=6)
@@ -2243,6 +2354,9 @@ class LauncherUI(tk.Tk):
         )
         self.epistemic_profile_preset_combo.grid(row=3, column=3, sticky="w", padx=6)
 
+        ttk.Label(self.classic_persona_frame,
+                  text="Legacy demographic sampling (hidden when 'Use JSON persona profiles' is ON below). Value pattern everywhere: none = leave blank, equal = even split, random = uniform draw, more_/most_X = tilt toward X, all_X = everyone is X.  Age/Gender/Education/Political/Ethnicity/Occupation/Early life shape wording and background flavor only - they do NOT steer belief updates.  Epistemic profile preset is the exception: it assigns the 6 core archetypes (trusting pragmatist, suspicious skeptic, open-minded skeptic, authority stabilizer, uncertainty-tolerant agnostic, practical distruster) and DOES steer belief behaviour.",
+                  style="Muted.TLabel", wraplength=1100, justify="left").grid(row=4, column=0, columnspan=4, sticky="w", pady=(8, 0))
         try:
             self.classic_persona_frame.grid_columnconfigure(1, weight=1)
             self.classic_persona_frame.grid_columnconfigure(3, weight=1)
@@ -2252,6 +2366,9 @@ class LauncherUI(tk.Tk):
         ttk.Label(persona, text="CSV path (auto):").grid(row=4, column=0, sticky="w", pady=6)
         self.csv_path_var = tk.StringVar(value="")
         ttk.Entry(persona, textvariable=self.csv_path_var, width=82, state="readonly")             .grid(row=4, column=1, columnspan=3, sticky="w", padx=6)
+
+        ttk.Label(persona, text="Generate checkbox: each run writes a FRESH list_agent_descriptions.csv into the selected prompt folder (personas regenerate per run; off = the existing CSV is used as-is).  Opinion dist: HOW initial -2..+2 ratings are assigned.  uniform = equal fifths across -2,-1,0,+1,+2 (if Agents is not divisible by 5, the remainder fills starting from -2).  skewed_positive = 4/5 of agents at +2 and 1/5 at -2, NOTHING in between.  skewed_negative = the mirror: 4/5 at -2, 1/5 at +2.  positive / negative = EVERY agent starts at +2 / -2 (consensus start).  custom_counts = you type the five counts yourself.  Positions are then shuffled by Seed, so WHO gets each value is seed-dependent but the counts are exact.  Custom counts: five comma-separated numbers (one per -2..+2 bucket, must sum to Agents); active only when dist = custom_counts.  Names source CSV: where agent names are drawn from.  CSV path (auto): the computed output target, read-only.",
+                  style="Muted.TLabel", wraplength=1150, justify="left").grid(row=5, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         # Disable custom counts until selected
         self._set_custom_counts_enabled()
@@ -2281,6 +2398,7 @@ class LauncherUI(tk.Tk):
         network.pack(fill="x")
 
         # Network type
+        self._register_solo_irrelevant_frame(network)
         ttk.Label(network, text="Network type:").grid(row=0, column=0, sticky="w", pady=6)
         self.network_type_var = tk.StringVar(value=self._settings.get("network_type", "ws"))
         self.network_type_combo = ttk.Combobox(
@@ -2362,8 +2480,8 @@ class LauncherUI(tk.Tk):
 
         ttk.Label(
             network,
-            text="Examples: idx:0, idx:3 or agent_id:12 or exact names. Used only for BA/custom.",
-            style="Muted.TLabel",
+            text="k_neighbors (ws): even number of neighbours per node before rewiring.  p_rewire (ws): fraction of edges rewired randomly (0 = ring lattice, 1 = fully random).  er_p_edge (er): probability each pair gets an edge.  ba_m_attach (ba): edges each new node brings (2 = sparse net with clear hubs).  BA hub priority: which stance gets the high-degree hubs (positive/negative = seed hubs with that belief; extreme / opposite_majority / custom variants).  Custom hubs: idx:0, agent_id:12 or exact names - BA/custom only.  Homophily at formation: similar agents become neighbours when the net is built.  Fields grey out based on Network type.",
+            style="Muted.TLabel", wraplength=1100, justify="left",
         ).grid(row=6, column=0, columnspan=5, sticky="w", pady=(0, 4))
 
         # Interaction mode (who the listener talks to)
@@ -2396,8 +2514,8 @@ class LauncherUI(tk.Tk):
 
         ttk.Label(
             interaction,
-            text="random = uniform choice; homophily = score-weighted choice (with epsilon exploration).",
-            style="Muted.TLabel",
+            text="Who the listener hears each step. random = uniform pick among neighbours; homophily = similarity-weighted pick with epsilon exploration.  Homophily scoring: full = traits + opinion distance, opinion_only = opinion distance alone. Affects WHO talks to WHOM - never the update rule itself.",
+            style="Muted.TLabel", wraplength=1100, justify="left",
         ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(4, 0))
 
         # Keep scoring-mode combobox in sync when selection changes
@@ -2431,6 +2549,8 @@ class LauncherUI(tk.Tk):
         # =============================
         log_frame = ttk.LabelFrame(tab_logs, text="Output", padding=10)
         log_frame.pack(fill="both", expand=True)
+        ttk.Label(log_frame, text="Left: live stdout/stderr of the run (read-only). Right: step waypoints - click one to jump the log there. Verbosity is set by Trace on the Run tab; Clear Log only clears this view, never files.",
+                  style="Muted.TLabel", wraplength=1100, justify="left").pack(anchor="w", pady=(0, 6))
 
         # Draggable split: output text (left) and step waypoints (right)
         log_paned = ttk.PanedWindow(log_frame, orient="horizontal")
@@ -2540,8 +2660,12 @@ class LauncherUI(tk.Tk):
     def _bind_global_notebook_mousewheel(self):
         """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
         def _on_mousewheel(event):
-            """Handle a Tkinter/UI event and update dependent controls."""
+            """Scroll the active tab's canvas - unless the event comes from an
+            open combobox dropdown (its floating popdown must scroll itself,
+            not drag the page underneath it around)."""
             try:
+                if "popdown" in str(getattr(event, "widget", "") or "").lower():
+                    return
                 current_tab = self.nb.select()
                 canvas = getattr(self, "_tab_scroll_canvases", {}).get(str(current_tab))
                 if canvas is None or not self._canvas_can_scroll_y(canvas):
@@ -2556,8 +2680,10 @@ class LauncherUI(tk.Tk):
                 pass
 
         def _on_shift_mousewheel(event):
-            """Handle a Tkinter/UI event and update dependent controls."""
+            """Horizontal counterpart of _on_mousewheel, with the same popdown guard."""
             try:
+                if "popdown" in str(getattr(event, "widget", "") or "").lower():
+                    return
                 current_tab = self.nb.select()
                 canvas = getattr(self, "_tab_scroll_canvases", {}).get(str(current_tab))
                 if canvas is None or not self._canvas_can_scroll_x(canvas):
@@ -2578,6 +2704,37 @@ class LauncherUI(tk.Tk):
                 pass
         try:
             self.bind_all("<Shift-MouseWheel>", _on_shift_mousewheel, add="+")
+        except Exception:
+            pass
+
+        def _combo_wheel(event):
+            """Wheel over a CLOSED combobox scrolls the page; the default ttk
+            behavior (cycling the selected value) is suppressed - accidental
+            value changes while scrolling were a real hazard."""
+            _on_mousewheel(event)
+            return "break"
+
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            try:
+                self.bind_class("TCombobox", seq, _combo_wheel)
+            except Exception:
+                pass
+
+        def _close_floating_popdown(_event=None):
+            """A dropdown left open during a tab switch keeps floating over the
+            new tab; send it Escape so it closes with the switch."""
+            try:
+                f = self.focus_get()
+            except Exception:
+                f = None
+            try:
+                if f is not None and "popdown" in str(f).lower():
+                    f.event_generate("<Escape>")
+            except Exception:
+                pass
+
+        try:
+            self.nb.bind("<<NotebookTabChanged>>", _close_floating_popdown, add="+")
         except Exception:
             pass
 
@@ -3102,7 +3259,7 @@ class LauncherUI(tk.Tk):
                 # Additional prompt-ish markers (outside prompt blocks)
                 elif low.startswith("do the following:") or low.startswith("use exactly this format:") or low.startswith("do not add"):
                     tag = "prompt"
-                # Agent output markers (common in your logs)
+                # Agent output markers (as they appear in run logs)
                 elif low.startswith("tweet from") or low.startswith("tweet:") or low.startswith("explanation:") or low.startswith("final_rating:"):
                     tag = "agent"
                 elif low.startswith("persona passed") or low.startswith("initializing agent") or low.startswith("agent_id=") or low.startswith("agent_name=") or low.startswith("step "):
@@ -3784,6 +3941,29 @@ class LauncherUI(tk.Tk):
             mode = "assimilation_only"
         return mode
 
+    def _update_model_dependent_controls_state(self):
+        """Gray out controls that make no sense for the selected model. Currently: Think
+        mode is disabled and locked to off for models with no thinking capability (e.g.
+        llama), the same way Same-side unlock is disabled under free_bounded."""
+        try:
+            cap = _model_thinking_capability(self.model_var.get())
+        except Exception:
+            cap = None
+        try:
+            if cap is not False:
+                self.think_mode_combo.configure(state="readonly")
+                last = getattr(self, "_last_enabled_think_mode", None)
+                if last and self.think_mode_var.get().strip() == "off":
+                    self.think_mode_var.set(last)
+            else:
+                cur = self.think_mode_var.get().strip()
+                if cur and cur != "off":
+                    self._last_enabled_think_mode = cur
+                self.think_mode_var.set("off")
+                self.think_mode_combo.configure(state="disabled")
+        except Exception:
+            pass
+
     def _update_allowed_update_controls_state(self):
         """Synchronize UI state or derived values after a setting changes."""
         mode = self._normalize_allowed_update_mode_ui()
@@ -3861,6 +4041,11 @@ class LauncherUI(tk.Tk):
             "think_mode": getattr(self, "think_mode_var", tk.StringVar(value="off")).get().strip(),
             "max_step_change": getattr(self, "max_step_change_var", tk.StringVar(value="1")).get().strip(),
             "allowed_update_mode": self._normalize_allowed_update_mode_ui(),
+            "validation_strictness": (getattr(self, "validation_strictness_var", tk.StringVar(value="strict")).get() or "strict"),
+            "wrong_side_explanation_requery": (getattr(self, "wrong_side_requery_var", tk.StringVar(value="off")).get() or "off"),
+            "deterministic": (getattr(self, "deterministic_var", tk.StringVar(value="off")).get() or "off"),
+            "structured_output": (getattr(self, "structured_output_var", tk.StringVar(value="off")).get() or "off"),
+            "solo_check": (getattr(self, "solo_check_var", tk.StringVar(value="off")).get() or "off"),
             "same_side_edge_unlock_hits": "0" if self._normalize_allowed_update_mode_ui() == "free_bounded" else getattr(self, "same_side_edge_unlock_hits_var", tk.StringVar(value="2")).get().strip(),
             "same_rating_step3_mode": getattr(self, "same_rating_step3_mode_var", tk.StringVar(value="skip_tweet_local")).get().strip(),
 
@@ -3886,8 +4071,6 @@ class LauncherUI(tk.Tk):
             "presence_penalty_step2": getattr(self, "presence_penalty_step2_var", tk.StringVar(value="")).get().strip(),
             "frequency_penalty_step2": getattr(self, "frequency_penalty_step2_var", tk.StringVar(value="")).get().strip(),
 
-            "step2_stance_purity_policy": getattr(self, "step2_stance_purity_policy_var", tk.StringVar(value="off")).get().strip(),
-            "step2_stance_purity_terms": getattr(self, "step2_stance_purity_terms_var", tk.StringVar(value="")).get().strip(),
 
             "temperature_step3": getattr(self, "temp_step3_var", tk.StringVar(value="")).get().strip(),
             "top_p_step3": getattr(self, "top_p_step3_var", tk.StringVar(value="")).get().strip(),
@@ -3958,6 +4141,7 @@ class LauncherUI(tk.Tk):
             "persona_use_topic_causal": bool(getattr(self, "persona_use_topic_causal_var", tk.BooleanVar(value=False)).get()),
             "persona_use_topic_linked": bool(getattr(self, "persona_use_topic_linked_var", tk.BooleanVar(value=False)).get()),
             "persona_use_flavor_only": bool(getattr(self, "persona_use_flavor_only_var", tk.BooleanVar(value=False)).get()),
+            "persona_use_expressive_style": bool(getattr(self, "persona_use_expressive_style_var", tk.BooleanVar(value=False)).get()),
             "persona_topic_mode": getattr(self, "persona_topic_mode_var", tk.StringVar(value="off")).get().strip(),
             "persona_topic_causal_profile_choice": getattr(self, "persona_topic_causal_profile_choice_var", tk.StringVar(value="Manual")).get().strip(),
             "persona_topic_profile_choice": getattr(self, "persona_topic_causal_profile_choice_var", tk.StringVar(value="Manual")).get().strip(),
@@ -3971,7 +4155,6 @@ class LauncherUI(tk.Tk):
             "persona_official_narrative_suspicion": getattr(self, "persona_official_narrative_suspicion_var", tk.StringVar(value="medium")).get().strip(),
             "persona_openness_to_update": getattr(self, "persona_openness_to_update_var", tk.StringVar(value="medium")).get().strip(),
             "persona_value_orientation": getattr(self, "persona_value_orientation_var", tk.StringVar(value="balanced")).get().strip(),
-            "persona_social_conformity": getattr(self, "persona_social_conformity_var", tk.StringVar(value="medium")).get().strip(),
             "persona_agency_vs_fatalism": getattr(self, "persona_agency_vs_fatalism_var", tk.StringVar(value="balanced")).get().strip(),
             "persona_conflict_style": getattr(self, "persona_conflict_style_var", tk.StringVar(value="balanced")).get().strip(),
             "persona_occupation": getattr(self, "persona_occupation_var", tk.StringVar(value="")).get().strip(),
@@ -4125,110 +4308,62 @@ class LauncherUI(tk.Tk):
             getattr(self, "persona_consciousness_intuition_combo", None),
             getattr(self, "persona_metaphysical_speculation_tolerance_combo", None),
         ]
+        # Show only as many topic-trait slots as the active topic actually defines
+        # (topics now have 3-4 traits after the A/B cleanup); hide the unused slots.
         for idx, (lbl, combo) in enumerate(zip(label_widgets, combo_widgets)):
-            meta = fields[idx] if idx < len(fields) else {}
+            show = idx < len(fields)
+            meta = fields[idx] if show else {}
             if lbl is not None:
                 try:
-                    text = meta.get("label", f"Topic trait {idx+1}")
-                    imp = meta.get("importance", "medium")
-                    lbl.configure(text=f"{text} ({imp}):")
+                    if show:
+                        lbl.configure(text=f"{meta.get('label', f'Topic trait {idx+1}')} ({meta.get('importance', 'medium')}):")
+                        lbl.grid()
+                    else:
+                        lbl.grid_remove()
                 except Exception:
                     pass
             if combo is not None:
                 try:
-                    combo.configure(values=list(meta.get("values", PERSONA_LEVEL_VALUES)))
+                    if show:
+                        combo.configure(values=list(meta.get("values", PERSONA_LEVEL_VALUES)))
+                        combo.grid()
+                    else:
+                        combo.grid_remove()
                 except Exception:
                     pass
         self._refresh_topic_profile_choices()
         self._update_json_persona_preview()
 
     def _local_persona_preset_catalog(self):
-        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
+        """The 6 standard core-causal archetypes offered by the 'Profile label' picker.
+        Core-causal only: expressive/debate-style traits live in their own opt-in layer,
+        so a core profile no longer touches them. evidence_style uses schema vocabulary
+        (concrete/source/coherence/intuition/mixed)."""
         return {
             "Institutionally trusting pragmatist": {
                 "institutional_trust": "high", "uncertainty_tolerance": "medium", "evidence_style": "concrete_first",
-                "official_narrative_suspicion": "low", "openness_to_update": "medium", "value_orientation": "balanced",
-                "social_conformity": "medium", "agency_vs_fatalism": "high_agency", "conflict_style": "consensus_seeking",
+                "official_narrative_suspicion": "low", "openness_to_update": "medium",
             },
             "Suspicious anti-institutional skeptic": {
-                "institutional_trust": "low", "uncertainty_tolerance": "low", "evidence_style": "suspicion_first",
-                "official_narrative_suspicion": "high", "openness_to_update": "low", "value_orientation": "outcome_focused",
-                "social_conformity": "low", "agency_vs_fatalism": "fatalistic", "conflict_style": "combative",
+                "institutional_trust": "low", "uncertainty_tolerance": "low", "evidence_style": "coherence_first",
+                "official_narrative_suspicion": "high", "openness_to_update": "low",
             },
             "Open-minded skeptical reviser": {
                 "institutional_trust": "low", "uncertainty_tolerance": "high", "evidence_style": "coherence_first",
-                "official_narrative_suspicion": "high", "openness_to_update": "high", "value_orientation": "balanced",
-                "social_conformity": "low", "agency_vs_fatalism": "balanced", "conflict_style": "balanced",
+                "official_narrative_suspicion": "high", "openness_to_update": "high",
             },
             "Authority-leaning stabilizer": {
-                "institutional_trust": "high", "uncertainty_tolerance": "low", "evidence_style": "authority_first",
-                "official_narrative_suspicion": "low", "openness_to_update": "low", "value_orientation": "procedural",
-                "social_conformity": "high", "agency_vs_fatalism": "balanced", "conflict_style": "consensus_seeking",
+                "institutional_trust": "high", "uncertainty_tolerance": "low", "evidence_style": "source_first",
+                "official_narrative_suspicion": "low", "openness_to_update": "low",
             },
             "Uncertainty-tolerant agnostic": {
                 "institutional_trust": "medium", "uncertainty_tolerance": "high", "evidence_style": "mixed",
-                "official_narrative_suspicion": "medium", "openness_to_update": "medium", "value_orientation": "balanced",
-                "social_conformity": "medium", "agency_vs_fatalism": "balanced", "conflict_style": "balanced",
+                "official_narrative_suspicion": "medium", "openness_to_update": "medium",
             },
             "Low-trust practical realist": {
                 "institutional_trust": "low", "uncertainty_tolerance": "medium", "evidence_style": "concrete_first",
-                "official_narrative_suspicion": "medium", "openness_to_update": "medium", "value_orientation": "outcome_focused",
-                "social_conformity": "medium", "agency_vs_fatalism": "fatalistic", "conflict_style": "balanced",
+                "official_narrative_suspicion": "medium", "openness_to_update": "medium",
             },
-            "Procedural democrat": {
-                "institutional_trust": "medium", "uncertainty_tolerance": "medium", "evidence_style": "coherence_first",
-                "official_narrative_suspicion": "medium", "openness_to_update": "medium", "value_orientation": "procedural",
-                "social_conformity": "medium", "agency_vs_fatalism": "high_agency", "conflict_style": "consensus_seeking",
-            },
-            "Outcome-first realist": {
-                "institutional_trust": "medium", "uncertainty_tolerance": "low", "evidence_style": "concrete_first",
-                "official_narrative_suspicion": "medium", "openness_to_update": "medium", "value_orientation": "outcome_focused",
-                "social_conformity": "medium", "agency_vs_fatalism": "fatalistic", "conflict_style": "balanced",
-            },
-            "Combative anti-establishment critic": {
-                "institutional_trust": "low", "uncertainty_tolerance": "low", "evidence_style": "suspicion_first",
-                "official_narrative_suspicion": "high", "openness_to_update": "medium", "value_orientation": "outcome_focused",
-                "social_conformity": "low", "agency_vs_fatalism": "fatalistic", "conflict_style": "combative",
-            },
-            "Consensus civic moderate": {
-                "institutional_trust": "medium", "uncertainty_tolerance": "medium", "evidence_style": "mixed",
-                "official_narrative_suspicion": "low", "openness_to_update": "medium", "value_orientation": "procedural",
-                "social_conformity": "high", "agency_vs_fatalism": "high_agency", "conflict_style": "consensus_seeking",
-            },
-            "Fatalistic crisis pessimist": {
-                "institutional_trust": "low", "uncertainty_tolerance": "low", "evidence_style": "concrete_first",
-                "official_narrative_suspicion": "high", "openness_to_update": "low", "value_orientation": "outcome_focused",
-                "social_conformity": "medium", "agency_vs_fatalism": "fatalistic", "conflict_style": "balanced",
-            },
-            "High-agency movement optimist": {
-                "institutional_trust": "medium", "uncertainty_tolerance": "high", "evidence_style": "concrete_first",
-                "official_narrative_suspicion": "low", "openness_to_update": "high", "value_orientation": "procedural",
-                "social_conformity": "low", "agency_vs_fatalism": "high_agency", "conflict_style": "combative",
-            },
-            "Domain expert technocrat": {
-                "institutional_trust": "high", "uncertainty_tolerance": "medium", "evidence_style": "authority_first",
-                "official_narrative_suspicion": "low", "openness_to_update": "medium", "value_orientation": "outcome_focused",
-                "social_conformity": "medium", "agency_vs_fatalism": "balanced", "conflict_style": "balanced",
-                "training_style": "formal", "domain_familiarity": "high",
-            },
-            "Detached low-interest observer": {
-                "institutional_trust": "off", "uncertainty_tolerance": "medium", "evidence_style": "off",
-                "official_narrative_suspicion": "off", "openness_to_update": "medium", "value_orientation": "off",
-                "social_conformity": "off", "agency_vs_fatalism": "off", "conflict_style": "off",
-                "topic_interest": "low", "prior_exposure": "low",
-            },
-            "Tradition-first institutional loyalist": {
-                "institutional_trust": "high", "uncertainty_tolerance": "low", "evidence_style": "authority_first",
-                "official_narrative_suspicion": "low", "openness_to_update": "low", "value_orientation": "procedural",
-                "social_conformity": "high", "agency_vs_fatalism": "balanced", "conflict_style": "consensus_seeking",
-            },
-            "Contrarian investigative analyst": {
-                "institutional_trust": "low", "uncertainty_tolerance": "high", "evidence_style": "coherence_first",
-                "official_narrative_suspicion": "high", "openness_to_update": "high", "value_orientation": "balanced",
-                "social_conformity": "low", "agency_vs_fatalism": "balanced", "conflict_style": "combative",
-                "training_style": "self_taught", "domain_familiarity": "medium",
-            },
-            "Custom": {},
         }
 
     def _preset_profile_choice_values(self):
@@ -4284,7 +4419,7 @@ class LauncherUI(tk.Tk):
                 preset = get_preset_profile_by_name(choice)
                 if preset:
                     ui_state = profile_to_ui_state(preset)
-                    for extra_key in ['value_orientation', 'social_conformity', 'agency_vs_fatalism', 'conflict_style']:
+                    for extra_key in ['value_orientation', 'agency_vs_fatalism', 'conflict_style']:
                         ui_state.setdefault(extra_key, 'off')
                     self._fill_json_profile_widgets(ui_state, preserve_choice=True)
             self.persona_custom_profile_label_var.set(choice)
@@ -4347,7 +4482,6 @@ class LauncherUI(tk.Tk):
             'official_narrative_suspicion': self.persona_official_narrative_suspicion_var,
             'openness_to_update': self.persona_openness_to_update_var,
             'value_orientation': self.persona_value_orientation_var,
-            'social_conformity': self.persona_social_conformity_var,
             'agency_vs_fatalism': self.persona_agency_vs_fatalism_var,
             'conflict_style': self.persona_conflict_style_var,
             'occupation': self.persona_occupation_var,
@@ -4426,7 +4560,6 @@ class LauncherUI(tk.Tk):
             'official_narrative_suspicion': ('' if self.persona_official_narrative_suspicion_var.get().strip() == 'off' else self.persona_official_narrative_suspicion_var.get().strip()),
             'openness_to_update': ('' if self.persona_openness_to_update_var.get().strip() == 'off' else self.persona_openness_to_update_var.get().strip()),
             'value_orientation': ('' if self.persona_value_orientation_var.get().strip() == 'off' else self.persona_value_orientation_var.get().strip()),
-            'social_conformity': ('' if self.persona_social_conformity_var.get().strip() == 'off' else self.persona_social_conformity_var.get().strip()),
             'agency_vs_fatalism': ('' if self.persona_agency_vs_fatalism_var.get().strip() == 'off' else self.persona_agency_vs_fatalism_var.get().strip()),
             'conflict_style': ('' if self.persona_conflict_style_var.get().strip() == 'off' else self.persona_conflict_style_var.get().strip()),
             'occupation': self.persona_occupation_var.get().strip(),
@@ -4531,7 +4664,8 @@ class LauncherUI(tk.Tk):
 
     def _build_json_persona_section(self, parent):
         """Build a derived object, command, path, or UI component used by the local pipeline."""
-        box = ttk.LabelFrame(parent, text="JSON persona profiles (new system)", padding=12)
+        box = ttk.LabelFrame(parent, text="JSON persona profiles", padding=12)
+        self._register_solo_irrelevant_frame(box)
         box.pack(fill='x', pady=(10,0))
 
         self.persona_schema_path_var = tk.StringVar(value=str(PERSONA_SCHEMA_PATH))
@@ -4548,6 +4682,7 @@ class LauncherUI(tk.Tk):
         self.persona_use_topic_causal_var = tk.BooleanVar(value=bool(self._settings.get('persona_use_topic_causal', False)))
         self.persona_use_topic_linked_var = tk.BooleanVar(value=bool(self._settings.get('persona_use_topic_linked', False)))
         self.persona_use_flavor_only_var = tk.BooleanVar(value=bool(self._settings.get('persona_use_flavor_only', False)))
+        self.persona_use_expressive_style_var = tk.BooleanVar(value=bool(self._settings.get('persona_use_expressive_style', False)))
         self.persona_topic_mode_var = tk.StringVar(value=self._settings.get('persona_topic_mode', 'off'))
         self.persona_topic_causal_profile_choice_var = tk.StringVar(value=self._settings.get('persona_topic_causal_profile_choice', self._settings.get('persona_topic_profile_choice', TOPIC_PROFILE_MANUAL)))
         self.persona_topic_profile_choice_var = self.persona_topic_causal_profile_choice_var  # compatibility alias
@@ -4562,7 +4697,6 @@ class LauncherUI(tk.Tk):
         self.persona_official_narrative_suspicion_var = tk.StringVar(value=self._settings.get('persona_official_narrative_suspicion', 'medium'))
         self.persona_openness_to_update_var = tk.StringVar(value=self._settings.get('persona_openness_to_update', 'medium'))
         self.persona_value_orientation_var = tk.StringVar(value=self._settings.get('persona_value_orientation', 'balanced'))
-        self.persona_social_conformity_var = tk.StringVar(value=self._settings.get('persona_social_conformity', 'medium'))
         self.persona_agency_vs_fatalism_var = tk.StringVar(value=self._settings.get('persona_agency_vs_fatalism', 'balanced'))
         self.persona_conflict_style_var = tk.StringVar(value=self._settings.get('persona_conflict_style', 'balanced'))
 
@@ -4613,7 +4747,7 @@ class LauncherUI(tk.Tk):
         ttk.Label(core, text='Mode:').grid(row=0, column=1, sticky='e')
         self.persona_profile_distribution_mode_combo = ttk.Combobox(core, textvariable=self.persona_profile_distribution_mode_var, values=DEFAULT_SCHEMA['allowed_values']['profile_distribution_mode'], width=10, state='readonly')
         self.persona_profile_distribution_mode_combo.grid(row=0, column=2, sticky='w', padx=6)
-        ttk.Label(core, text='(random/equal disable direct editing)', style='Muted.TLabel').grid(row=0, column=3, sticky='w')
+        ttk.Label(core, text='Mode: all = EVERY agent gets this profile exactly as configured here.  equal = even split of the preset library across agents (remainder round-robin).  random = each agent draws a preset uniformly.  more / most = this profile for 55% / 80% of agents, the others share the rest.  Note: random/equal draw from the PRESET library, so your direct edits to the fields below do not enter the pool - editing is disabled there.', style='Muted.TLabel', wraplength=760, justify='left').grid(row=0, column=3, sticky='w')
 
         ttk.Label(core, text='Profile label:').grid(row=1, column=0, sticky='w', pady=4)
         self.persona_profile_label_combo = ttk.Combobox(core, textvariable=self.persona_profile_label_choice_var, values=self._preset_profile_choice_values(), width=30, state='readonly')
@@ -4648,28 +4782,34 @@ class LauncherUI(tk.Tk):
         self.persona_openness_to_update_combo.grid(row=7, column=1, sticky='w', padx=6)
         ttk.Label(core, text='How easily a strong tweet can move the agent.', style='Muted.TLabel').grid(row=7, column=2, columnspan=2, sticky='w')
 
-        ttk.Label(core, text='Value orientation:').grid(row=8, column=0, sticky='w', pady=4)
-        self.persona_value_orientation_combo = ttk.Combobox(core, textvariable=self.persona_value_orientation_var, values=self._values_with_off(['balanced', 'procedural', 'outcome_focused']), width=16, state='readonly')
-        self.persona_value_orientation_combo.grid(row=8, column=1, sticky='w', padx=6)
-        ttk.Label(core, text='Whether process legitimacy or downstream results matter more.', style='Muted.TLabel').grid(row=8, column=2, columnspan=2, sticky='w')
+        # --- Expressive / debate-style layer (separate category) --------------------
+        # These three are NOT causal belief-update drivers. They only relax the output
+        # validators so persona-consistent wording is not flagged (outcome framing /
+        # fatalistic framing / combative tone). Kept in their own layer, OFF by default,
+        # so they never confound the causal comparison. social_conformity was retired
+        # (it produced no validator permission).
+        expressive = ttk.LabelFrame(box, text='Expressive / debate style - validator permissions (off by default; does NOT change belief update)', padding=8)
+        expressive.grid(row=6, column=0, columnspan=4, sticky='we', pady=(8,0))
+        ttk.Checkbutton(expressive, text='Include expressive/debate style', variable=self.persona_use_expressive_style_var).grid(row=0, column=0, columnspan=4, sticky='w')
+        ttk.Label(expressive, text='Only relaxes output validators for in-character wording. Leave off unless you deliberately want expressive variety or a persona-adherence probe.', style='Muted.TLabel').grid(row=1, column=0, columnspan=4, sticky='w')
 
-        ttk.Label(core, text='Social conformity:').grid(row=9, column=0, sticky='w', pady=4)
-        self.persona_social_conformity_combo = ttk.Combobox(core, textvariable=self.persona_social_conformity_var, values=self._values_with_off(['low', 'medium', 'high']), width=14, state='readonly')
-        self.persona_social_conformity_combo.grid(row=9, column=1, sticky='w', padx=6)
-        ttk.Label(core, text='How much the person tends to align with surrounding consensus.', style='Muted.TLabel').grid(row=9, column=2, columnspan=2, sticky='w')
+        ttk.Label(expressive, text='Value orientation:').grid(row=2, column=0, sticky='w', pady=4)
+        self.persona_value_orientation_combo = ttk.Combobox(expressive, textvariable=self.persona_value_orientation_var, values=self._values_with_off(['balanced', 'procedural', 'outcome_focused']), width=16, state='readonly')
+        self.persona_value_orientation_combo.grid(row=2, column=1, sticky='w', padx=6)
+        ttk.Label(expressive, text='outcome_focused: validator allows consequence-based framing.', style='Muted.TLabel').grid(row=2, column=2, columnspan=2, sticky='w')
 
-        ttk.Label(core, text='Agency vs fatalism:').grid(row=10, column=0, sticky='w', pady=4)
-        self.persona_agency_vs_fatalism_combo = ttk.Combobox(core, textvariable=self.persona_agency_vs_fatalism_var, values=self._values_with_off(['balanced', 'high_agency', 'fatalistic']), width=14, state='readonly')
-        self.persona_agency_vs_fatalism_combo.grid(row=10, column=1, sticky='w', padx=6)
-        ttk.Label(core, text='Whether they think people can really shape events or are constrained by structures.', style='Muted.TLabel').grid(row=10, column=2, columnspan=2, sticky='w')
+        ttk.Label(expressive, text='Agency vs fatalism:').grid(row=3, column=0, sticky='w', pady=4)
+        self.persona_agency_vs_fatalism_combo = ttk.Combobox(expressive, textvariable=self.persona_agency_vs_fatalism_var, values=self._values_with_off(['balanced', 'high_agency', 'fatalistic']), width=14, state='readonly')
+        self.persona_agency_vs_fatalism_combo.grid(row=3, column=1, sticky='w', padx=6)
+        ttk.Label(expressive, text='fatalistic: validator allows structural / "forces bigger than us" framing.', style='Muted.TLabel').grid(row=3, column=2, columnspan=2, sticky='w')
 
-        ttk.Label(core, text='Conflict style:').grid(row=11, column=0, sticky='w', pady=4)
-        self.persona_conflict_style_combo = ttk.Combobox(core, textvariable=self.persona_conflict_style_var, values=self._values_with_off(['balanced', 'consensus_seeking', 'combative']), width=16, state='readonly')
-        self.persona_conflict_style_combo.grid(row=11, column=1, sticky='w', padx=6)
-        ttk.Label(core, text='Whether they seek accommodation or sharper confrontation in disagreement.', style='Muted.TLabel').grid(row=11, column=2, columnspan=2, sticky='w')
+        ttk.Label(expressive, text='Conflict style:').grid(row=4, column=0, sticky='w', pady=4)
+        self.persona_conflict_style_combo = ttk.Combobox(expressive, textvariable=self.persona_conflict_style_var, values=self._values_with_off(['balanced', 'consensus_seeking', 'combative']), width=16, state='readonly')
+        self.persona_conflict_style_combo.grid(row=4, column=1, sticky='w', padx=6)
+        ttk.Label(expressive, text='combative: validator allows sharper / confrontational tone.', style='Muted.TLabel').grid(row=4, column=2, columnspan=2, sticky='w')
 
         topic_causal = ttk.LabelFrame(box, text='Topic causal traits (high causal weight; changes with prompt version)', padding=8)
-        topic_causal.grid(row=6, column=0, columnspan=4, sticky='we', pady=(8,0))
+        topic_causal.grid(row=7, column=0, columnspan=4, sticky='we', pady=(8,0))
         ttk.Checkbutton(topic_causal, text='Include topic causal traits', variable=self.persona_use_topic_causal_var).grid(row=0, column=0, sticky='w')
         ttk.Label(topic_causal, text='Topic profile:').grid(row=0, column=1, sticky='e', padx=(12,0))
         self.persona_topic_causal_profile_combo = ttk.Combobox(topic_causal, textvariable=self.persona_topic_causal_profile_choice_var, values=[TOPIC_PROFILE_MANUAL], width=32, state='readonly')
@@ -4708,7 +4848,7 @@ class LauncherUI(tk.Tk):
         ttk.Button(topic_causal, text='Reset topic-causal fields to selected profile', command=self._reset_topic_causal_to_profile).grid(row=6, column=0, sticky='w', pady=(6,0))
 
         derived = ttk.LabelFrame(box, text='Live inferred view (updates from core variables in real time)', padding=8)
-        derived.grid(row=7, column=0, columnspan=4, sticky='we', pady=(8,0))
+        derived.grid(row=8, column=0, columnspan=4, sticky='we', pady=(8,0))
         ttk.Label(derived, text='These are generated continuously from the core variables. They do not enter prompts unless their layer is enabled below.', style='Muted.TLabel').grid(row=0, column=0, columnspan=4, sticky='w')
         ttk.Label(derived, text='Run behavior: personas are generated before the run starts and then stay fixed for the whole run unless you later build an explicit dynamic-persona condition.', style='Muted.TLabel').grid(row=1, column=0, columnspan=4, sticky='w', pady=(2,0))
         ttk.Label(derived, text='Inferred distributions:').grid(row=2, column=0, sticky='nw', pady=(6,0))
@@ -4737,7 +4877,7 @@ class LauncherUI(tk.Tk):
             pass
 
         topic = ttk.LabelFrame(box, text='Topic-linked background: role/expertise + familiarity (medium causal weight)', padding=8)
-        topic.grid(row=8, column=0, columnspan=4, sticky='we', pady=(8,0))
+        topic.grid(row=9, column=0, columnspan=4, sticky='we', pady=(8,0))
         ttk.Checkbutton(topic, text='Include topic-linked background', variable=self.persona_use_topic_linked_var).grid(row=0, column=0, sticky='w')
         ttk.Label(topic, text='Role/expertise and familiarity are separate from topic-causal traits; they matter only when relevant to the claim.', style='Muted.TLabel').grid(row=0, column=4, sticky='w')
         ttk.Label(topic, text='Mode:').grid(row=0, column=1, sticky='e')
@@ -4766,9 +4906,11 @@ class LauncherUI(tk.Tk):
         self.persona_custom_topic_notes_entry = ttk.Entry(topic, textvariable=self.persona_custom_topic_notes_var, width=62)
         self.persona_custom_topic_notes_entry.grid(row=5, column=1, columnspan=3, sticky='we', padx=6)
         ttk.Button(topic, text='Reset topic-background fields to live suggestions', command=self._reset_topic_to_generated).grid(row=6, column=0, sticky='w', pady=(6,0))
+        ttk.Label(topic, text='Mode: off = layer not rendered; auto = fields filled from the live suggestions; manual (+ override tick) = your values win.  Occupation / Education / Training style: who the agent is professionally - matters only when relevant to the claim (an engineer weighs technical points more).  Domain familiarity: none..high, how well they know THIS topic.  Topic interest: how much they care.  Prior exposure: what they have already heard about the claim.  Topic notes: free text, never auto-filled by the live suggestions. CAREFUL: if filled while this layer is ON, it IS rendered into the persona card as "Topic note: ..." - keep it empty unless you want the agents to read it.',
+                  style='Muted.TLabel', wraplength=1050, justify='left').grid(row=7, column=0, columnspan=4, sticky='w', pady=(6,0))
 
         flavor = ttk.LabelFrame(box, text='Flavor-only descriptors (low causal weight)', padding=8)
-        flavor.grid(row=9, column=0, columnspan=4, sticky='we', pady=(8,0))
+        flavor.grid(row=10, column=0, columnspan=4, sticky='we', pady=(8,0))
         ttk.Checkbutton(flavor, text='Include flavor-only descriptors', variable=self.persona_use_flavor_only_var).grid(row=0, column=0, sticky='w')
         ttk.Label(flavor, text='Mode:').grid(row=0, column=1, sticky='e')
         self.persona_flavor_mode_combo = ttk.Combobox(flavor, textvariable=self.persona_flavor_mode_var, values=DEFAULT_SCHEMA['allowed_values']['flavor_mode'], width=10, state='readonly')
@@ -4791,6 +4933,8 @@ class LauncherUI(tk.Tk):
         self.persona_lifestyle_notes_entry = ttk.Entry(flavor, textvariable=self.persona_lifestyle_notes_var, width=62)
         self.persona_lifestyle_notes_entry.grid(row=3, column=1, columnspan=3, sticky='we', padx=6)
         ttk.Button(flavor, text='Reset flavor fields to live suggestions', command=self._reset_flavor_to_generated).grid(row=4, column=0, sticky='w', pady=(6,0))
+        ttk.Label(flavor, text='Lowest-weight layer: shapes WORDING and voice, must not steer belief direction.  Mode: off / auto (from live suggestions) / manual (+ override tick).  Age group / Gender / Ethnicity / Lifestyle notes: demographic colour for the persona card.  Tone hint: explicit voice instruction (e.g. dry, ironic).  Show profile label: whether the archetype name (e.g. suspicious skeptic) is written INSIDE the persona card the agent sees.',
+                  style='Muted.TLabel', wraplength=1050, justify='left').grid(row=5, column=0, columnspan=5, sticky='w', pady=(6,0))
 
         try:
             box.grid_columnconfigure(1, weight=1)
@@ -4809,7 +4953,6 @@ class LauncherUI(tk.Tk):
             self.persona_official_narrative_suspicion_combo,
             self.persona_openness_to_update_combo,
             self.persona_value_orientation_combo,
-            self.persona_social_conformity_combo,
             self.persona_agency_vs_fatalism_combo,
             self.persona_conflict_style_combo,
             self.persona_topic_causal_profile_combo,
@@ -4852,7 +4995,29 @@ class LauncherUI(tk.Tk):
 
         self.persona_preview_text = tk.Text(box, height=14, wrap='word', bg='#0c1328', fg='#f2f4ff', insertbackground='#f2f4ff')
         self.persona_preview_text.grid(row=13, column=0, columnspan=4, sticky='we', pady=(6,0))
-        self.persona_preview_text.configure(state='disabled')
+        _preview_scroll = ttk.Scrollbar(box, orient='vertical', command=self.persona_preview_text.yview)
+        _preview_scroll.grid(row=13, column=4, sticky='ns', pady=(6,0))
+        self.persona_preview_text.configure(state='disabled', yscrollcommand=_preview_scroll.set)
+
+        def _preview_wheel(event):
+            """Scroll the preview text itself and stop the event there, so the
+            page underneath does not move at the same time."""
+            try:
+                if getattr(event, 'delta', 0):
+                    self.persona_preview_text.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+                elif getattr(event, 'num', None) == 4:
+                    self.persona_preview_text.yview_scroll(-3, 'units')
+                elif getattr(event, 'num', None) == 5:
+                    self.persona_preview_text.yview_scroll(3, 'units')
+            except Exception:
+                pass
+            return 'break'
+
+        for _seq in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+            try:
+                self.persona_preview_text.bind(_seq, _preview_wheel)
+            except Exception:
+                pass
 
         try:
             self.persona_profile_combo.bind('<<ComboboxSelected>>', self._apply_selected_profile)
@@ -4868,7 +5033,6 @@ class LauncherUI(tk.Tk):
             self.persona_official_narrative_suspicion_var,
             self.persona_openness_to_update_var,
             self.persona_value_orientation_var,
-            self.persona_social_conformity_var,
             self.persona_agency_vs_fatalism_var,
             self.persona_conflict_style_var,
         ]:
@@ -4926,6 +5090,11 @@ class LauncherUI(tk.Tk):
             self._apply_core_preset_choice()
         self._update_json_profile_controls_state()
         self._update_classic_persona_controls_state()
+        try:
+            self.solo_check_var.trace_add('write', self._update_solo_check_state)
+        except Exception:
+            pass
+        self._update_solo_check_state()
         self.after(10, self._apply_live_persona_generation)
 
 
@@ -4945,7 +5114,6 @@ class LauncherUI(tk.Tk):
         uncertainty = (self.persona_uncertainty_tolerance_var.get() or "medium").strip().lower()
         evidence = (self.persona_evidence_style_var.get() or "mixed").strip().lower()
         value_orientation = (getattr(self, "persona_value_orientation_var", tk.StringVar(value="balanced")).get() or "balanced").strip().lower()
-        conformity = (getattr(self, "persona_social_conformity_var", tk.StringVar(value="medium")).get() or "medium").strip().lower()
         agency = (getattr(self, "persona_agency_vs_fatalism_var", tk.StringVar(value="balanced")).get() or "balanced").strip().lower()
         conflict = (getattr(self, "persona_conflict_style_var", tk.StringVar(value="balanced")).get() or "balanced").strip().lower()
 
@@ -5037,12 +5205,6 @@ class LauncherUI(tk.Tk):
             elif value_orientation == "outcome_focused":
                 adjust(occupation, "manager", 0.03); adjust(occupation, "economist", 0.03)
 
-        if active(conformity):
-            if conformity == "low":
-                adjust(age, "18-25", 0.03); adjust(occupation, "journalist", 0.02); adjust(politics, "center", -0.02)
-            elif conformity == "high":
-                adjust(age, "36-50", 0.02); adjust(age, "51-65", 0.03); adjust(politics, "center", 0.03)
-
         if active(agency):
             if agency == "high_agency":
                 adjust(occupation, "teacher", 0.02); adjust(occupation, "social_worker", 0.03); adjust(occupation, "student", 0.02)
@@ -5109,17 +5271,6 @@ class LauncherUI(tk.Tk):
                 adjust_many(training_style, [('humanities', 0.030), ('mixed', 0.020), ('technical', -0.050)])
                 adjust_many(ethnicity, [('unspecified', 0.010), ('caucasian', 0.004), ('asian', -0.008)])
 
-            if is_high('testability_preference'):
-                adjust_many(occupation, [('scientist', 0.055), ('engineer', 0.040), ('doctor', 0.030), ('mathematician', 0.020)])
-                adjust_many(education, [('master', 0.035), ('phd', 0.040), ('high_school', -0.035), ('some_college', -0.020)])
-                adjust_many(training_style, [('technical', 0.060), ('formal', 0.020) if 'formal' in training_style else ('technical', 0.0)])
-                adjust_many(domain_familiarity, [('high', 0.070), ('low', -0.040)])
-                adjust_many(topic_interest, [('high', 0.040), ('medium', 0.020), ('low', -0.040)])
-                adjust_many(ethnicity, [('asian', 0.012), ('mixed', 0.004), ('unspecified', -0.010)])
-            elif is_low('testability_preference'):
-                adjust_many(occupation, [('philosopher', 0.045), ('student', 0.025), ('teacher', 0.020)])
-                adjust_many(training_style, [('humanities', 0.045), ('mixed', 0.025), ('technical', -0.030)])
-
             if is_high('anthropic_reasoning_comfort'):
                 adjust_many(occupation, [('philosopher', 0.060), ('mathematician', 0.040), ('economist', 0.025), ('scientist', 0.020)])
                 adjust_many(ethnicity, [('mixed', 0.006), ('asian', 0.006), ('other', 0.002), ('unspecified', -0.010)])
@@ -5145,38 +5296,10 @@ class LauncherUI(tk.Tk):
                 adjust_many(occupation, [('doctor', 0.030), ('scientist', 0.030), ('engineer', 0.020)])
                 adjust_many(training_style, [('technical', 0.025), ('formal', 0.015) if 'formal' in training_style else ('technical', 0.0)])
 
-            if is_high('metaphysical_speculation_tolerance'):
-                adjust_many(occupation, [('philosopher', 0.060), ('student', 0.030), ('teacher', 0.020)])
-                adjust_many(training_style, [('humanities', 0.045), ('mixed', 0.030)])
-                adjust_many(topic_interest, [('high', 0.055), ('low', -0.035)])
-            elif is_low('metaphysical_speculation_tolerance'):
-                adjust_many(occupation, [('engineer', 0.025), ('manager', 0.020), ('scientist', 0.020)])
-                adjust_many(training_style, [('technical', 0.030), ('practical', 0.030) if 'practical' in training_style else ('mixed', 0.010)])
-
         # v119 Twin Towers / 9-11: security-state, motive, source, anomaly, and
         # coordination traits bias toward relevant investigative, legal, historical,
         # engineering, and policy backgrounds.
         elif topic_root == 'v119' and topic_causal_values:
-            if is_high('security_state_suspicion'):
-                adjust_many(occupation, [('journalist', 0.055), ('policy_analyst', 0.040), ('historian', 0.030), ('lawyer', 0.025), ('military_veteran', 0.025)])
-                adjust_many(ethnicity, [('black', 0.012), ('hispanic', 0.010), ('mixed', 0.004), ('unspecified', -0.014)])
-                adjust_many(politics, [('far_left', 0.025), ('far_right', 0.025), ('center', -0.030)])
-                adjust_many(topic_interest, [('high', 0.050), ('low', -0.035)])
-                adjust_many(prior_exposure, [('high', 0.050), ('low', -0.040)])
-            elif is_low('security_state_suspicion'):
-                adjust_many(politics, [('center', 0.030), ('center_left', 0.015), ('center_right', 0.015), ('far_left', -0.020), ('far_right', -0.020)])
-                adjust_many(occupation, [('teacher', 0.020), ('manager', 0.020), ('lawyer', 0.015)])
-
-            if is_high('official_investigation_trust'):
-                adjust_many(occupation, [('lawyer', 0.040), ('manager', 0.025), ('teacher', 0.025), ('scientist', 0.020)])
-                adjust_many(ethnicity, [('unspecified', -0.006), ('caucasian', 0.004), ('asian', 0.002)])
-                adjust_many(education, [('bachelor', 0.020), ('master', 0.030), ('phd', 0.020), ('high_school', -0.030)])
-                adjust_many(training_style, [('formal', 0.040) if 'formal' in training_style else ('mixed', 0.020), ('mixed', 0.020)])
-                adjust_many(politics, [('center', 0.030), ('far_left', -0.015), ('far_right', -0.015)])
-            elif is_low('official_investigation_trust'):
-                adjust_many(occupation, [('journalist', 0.040), ('historian', 0.025), ('student', 0.020)])
-                adjust_many(prior_exposure, [('high', 0.040), ('low', -0.030)])
-
             if is_high('geopolitical_motive_sensitivity'):
                 adjust_many(occupation, [('historian', 0.060), ('journalist', 0.040), ('policy_analyst', 0.040), ('social_worker', 0.015)])
                 adjust_many(ethnicity, [('black', 0.008), ('hispanic', 0.008), ('mixed', 0.004), ('unspecified', -0.012)])
@@ -5200,25 +5323,10 @@ class LauncherUI(tk.Tk):
             elif is_low('anomaly_sensitivity'):
                 adjust_many(occupation, [('lawyer', 0.020), ('manager', 0.020), ('teacher', 0.020)])
 
-            if is_high('source_skepticism'):
-                adjust_many(occupation, [('journalist', 0.040), ('lawyer', 0.030), ('scientist', 0.020), ('teacher', 0.015)])
-                adjust_many(education, [('bachelor', 0.020), ('master', 0.030), ('phd', 0.020)])
-                adjust_many(training_style, [('analytical', 0.040) if 'analytical' in training_style else ('mixed', 0.025), ('formal', 0.020) if 'formal' in training_style else ('mixed', 0.010)])
-
         # v52 Moon landing: engineering/science trust and anomaly/media/motive
         # traits bias toward appropriate STEM, historical, media, or institutional
         # backgrounds. Engineering-first should visibly raise engineering odds.
         elif topic_root == 'v52' and topic_causal_values:
-            if is_high('space_program_trust'):
-                adjust_many(occupation, [('scientist', 0.060), ('engineer', 0.050), ('teacher', 0.025), ('pilot', 0.025)])
-                adjust_many(ethnicity, [('asian', 0.012), ('caucasian', 0.006), ('mixed', 0.003), ('unspecified', -0.012)])
-                adjust_many(education, [('bachelor', 0.025), ('master', 0.035), ('phd', 0.030), ('high_school', -0.030)])
-                adjust_many(training_style, [('technical', 0.060), ('formal', 0.030) if 'formal' in training_style else ('mixed', 0.010)])
-                adjust_many(domain_familiarity, [('high', 0.070), ('low', -0.050)])
-            elif is_low('space_program_trust'):
-                adjust_many(occupation, [('journalist', 0.030), ('retail', 0.020), ('student', 0.020)])
-                adjust_many(politics, [('far_left', 0.015), ('far_right', 0.015), ('center', -0.020)])
-
             if is_high('cold_war_motive_sensitivity'):
                 adjust_many(occupation, [('historian', 0.060), ('journalist', 0.040), ('policy_analyst', 0.030), ('teacher', 0.020)])
                 adjust_many(training_style, [('humanities', 0.055), ('social_science', 0.035), ('technical', -0.020)])
@@ -5238,15 +5346,6 @@ class LauncherUI(tk.Tk):
                 adjust_many(occupation, [('teacher', 0.025), ('journalist', 0.020), ('retail', 0.020)])
                 adjust_many(training_style, [('humanities', 0.030), ('mixed', 0.020), ('technical', -0.045)])
 
-            if is_high('institutional_science_trust'):
-                adjust_many(occupation, [('scientist', 0.060), ('teacher', 0.030), ('engineer', 0.030), ('doctor', 0.020)])
-                adjust_many(ethnicity, [('asian', 0.010), ('caucasian', 0.006), ('mixed', 0.003), ('unspecified', -0.010)])
-                adjust_many(education, [('master', 0.035), ('phd', 0.040), ('high_school', -0.030)])
-                adjust_many(training_style, [('formal', 0.045) if 'formal' in training_style else ('mixed', 0.020), ('technical', 0.035)])
-                adjust_many(politics, [('center', 0.020), ('center_left', 0.015), ('center_right', 0.015)])
-            elif is_low('institutional_science_trust'):
-                adjust_many(occupation, [('journalist', 0.030), ('student', 0.020), ('retail', 0.015)])
-
             if is_high('visual_anomaly_sensitivity'):
                 adjust_many(occupation, [('journalist', 0.040), ('media_worker', 0.040), ('engineer', 0.020), ('student', 0.020)])
                 adjust_many(ethnicity, [('mixed', 0.006), ('hispanic', 0.006), ('black', 0.004), ('unspecified', -0.010)])
@@ -5254,13 +5353,6 @@ class LauncherUI(tk.Tk):
                 adjust_many(topic_interest, [('high', 0.040), ('low', -0.025)])
             elif is_low('visual_anomaly_sensitivity'):
                 adjust_many(occupation, [('engineer', 0.025), ('scientist', 0.020), ('manager', 0.015)])
-
-            if is_high('media_manipulation_suspicion'):
-                adjust_many(occupation, [('journalist', 0.050), ('media_worker', 0.040), ('historian', 0.020), ('student', 0.020)])
-                adjust_many(politics, [('far_left', 0.020), ('far_right', 0.020), ('center', -0.025)])
-                adjust_many(prior_exposure, [('high', 0.040), ('low', -0.030)])
-            elif is_low('media_manipulation_suspicion'):
-                adjust_many(occupation, [('teacher', 0.020), ('manager', 0.020), ('scientist', 0.020)])
 
         def normalize(weights):
             """Normalize user-provided or file-derived text into the form expected downstream."""
@@ -5294,7 +5386,7 @@ class LauncherUI(tk.Tk):
             "use_topic_causal": int(bool(use_topic_causal)),
             "core_snapshot": {
                 "trust": trust, "update": update, "suspicion": suspicion, "uncertainty": uncertainty,
-                "evidence": evidence, "value_orientation": value_orientation, "conformity": conformity,
+                "evidence": evidence, "value_orientation": value_orientation,
                 "agency": agency, "conflict": conflict,
             }
         }
@@ -5368,7 +5460,9 @@ class LauncherUI(tk.Tk):
             'domain_familiarity': familiarity,
             'topic_interest': interest,
             'prior_exposure': exposure,
-            'custom_topic_notes': topic_text,
+            # custom_topic_notes is deliberately NOT auto-filled: it is the
+            # user's field. If filled while the topic-background layer is ON,
+            # the renderer prints it in the card as 'Topic note: ...'.
         }
         return out
 
@@ -5404,7 +5498,6 @@ class LauncherUI(tk.Tk):
         evidence = snap.get("evidence", "mixed")
         value_orientation = snap.get("value_orientation", "balanced")
         agency = snap.get("agency", "balanced")
-        conformity = snap.get("conformity", "medium")
         conflict = snap.get("conflict", "balanced")
         politics_hint = self._top_distribution_labels(d.get("politics", {}), top_n=2)
         ethnicity_hint = self._top_distribution_labels(d.get("ethnicity", {}), top_n=3)
@@ -5450,10 +5543,6 @@ class LauncherUI(tk.Tk):
             topic_lines.append("They are more likely to see direct public participation as meaningful even when outcomes are messy.")
         elif agency == "fatalistic":
             topic_lines.append("They are more likely to assume structural pressures overpower individual or voter agency.")
-        if conformity == 'high':
-            topic_lines.append("They are somewhat more likely to read broad social consensus as a stabilizing cue.")
-        elif conformity == 'low':
-            topic_lines.append("They are somewhat more likely to resist surrounding consensus and focus on their own reading of the evidence.")
         topic_lines.append(f"For {get_topic_label(self.prompt_version_var.get())} runs, the high-weight topic-causal layer changes with the selected prompt version.")
         topic_lines.append("Role/expertise is a medium/high lens only when relevant; flavor fields should mainly alter wording, not belief direction.")
 
@@ -5493,8 +5582,13 @@ class LauncherUI(tk.Tk):
             flavor_lines.append("Debate stance: prefers accommodation and less abrasive disagreement.")
         return "\n".join(topic_lines), "\n".join(flavor_lines), d
 
-    def _apply_live_persona_generation(self, *_args):
-        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
+    def _apply_live_persona_generation(self, *_args, only=None):
+        """Regenerate live suggestions and apply them to the auto-managed fields.
+
+        only=None refreshes both groups (trace callbacks / Regenerate button);
+        only='topic' / only='flavor' limits BOTH the suggestion boxes and the
+        field application to that group, so resetting one group can no longer
+        re-roll the other one's values."""
         if not hasattr(self, 'persona_preview_text'):
             return
         topic_text, flavor_text, d = self._suggest_topic_and_flavor()
@@ -5516,31 +5610,33 @@ class LauncherUI(tk.Tk):
             self.persona_distribution_text.configure(state='disabled')
         except Exception:
             pass
-        try:
-            self.persona_topic_generated_text.configure(state='normal')
-            self.persona_topic_generated_text.delete('1.0', 'end')
-            self.persona_topic_generated_text.insert('1.0', topic_text)
-            self.persona_topic_generated_text.configure(state='disabled')
-        except Exception:
-            pass
-        try:
-            self.persona_flavor_generated_text.configure(state='normal')
-            self.persona_flavor_generated_text.delete('1.0', 'end')
-            self.persona_flavor_generated_text.insert('1.0', flavor_text)
-            self.persona_flavor_generated_text.configure(state='disabled')
-        except Exception:
-            pass
+        if only in (None, 'topic'):
+            try:
+                self.persona_topic_generated_text.configure(state='normal')
+                self.persona_topic_generated_text.delete('1.0', 'end')
+                self.persona_topic_generated_text.insert('1.0', topic_text)
+                self.persona_topic_generated_text.configure(state='disabled')
+            except Exception:
+                pass
+        if only in (None, 'flavor'):
+            try:
+                self.persona_flavor_generated_text.configure(state='normal')
+                self.persona_flavor_generated_text.delete('1.0', 'end')
+                self.persona_flavor_generated_text.insert('1.0', flavor_text)
+                self.persona_flavor_generated_text.configure(state='disabled')
+            except Exception:
+                pass
 
         topic_override = bool(getattr(self, 'persona_topic_manual_override_var', tk.BooleanVar(value=False)).get())
         flavor_override = bool(getattr(self, 'persona_flavor_manual_override_var', tk.BooleanVar(value=False)).get())
         self._persona_auto_apply_in_progress = True
         try:
-            if not topic_override:
+            if only in (None, 'topic') and not topic_override:
                 for key, value in self._topic_generated_fields(d, topic_text).items():
                     var = getattr(self, f'persona_{key}_var', None)
                     if var is not None:
                         var.set(value)
-            if not flavor_override:
+            if only in (None, 'flavor') and not flavor_override:
                 for key, value in self._flavor_generated_fields(d, flavor_text).items():
                     var = getattr(self, f'persona_{key}_var', None)
                     if var is not None:
@@ -5579,7 +5675,8 @@ class LauncherUI(tk.Tk):
         self._apply_topic_causal_profile_choice()
 
     def _reset_topic_to_generated(self):
-        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
+        """Clear the topic-background fields and refill them from fresh suggestions.
+        Scoped: flavor fields and the flavor suggestion box are left untouched."""
         self.persona_topic_manual_override_var.set(False)
         self._persona_auto_apply_in_progress = True
         try:
@@ -5589,10 +5686,11 @@ class LauncherUI(tk.Tk):
                     var.set('')
         finally:
             self._persona_auto_apply_in_progress = False
-        self._apply_live_persona_generation()
+        self._apply_live_persona_generation(only='topic')
 
     def _reset_flavor_to_generated(self):
-        """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
+        """Clear the flavor fields and refill them from fresh suggestions.
+        Scoped: topic fields and the topic suggestion box are left untouched."""
         self.persona_flavor_manual_override_var.set(False)
         self._persona_auto_apply_in_progress = True
         try:
@@ -5602,8 +5700,73 @@ class LauncherUI(tk.Tk):
                     var.set('')
         finally:
             self._persona_auto_apply_in_progress = False
-        self._apply_live_persona_generation()
+        self._apply_live_persona_generation(only='flavor')
 
+
+    def _walk_widgets(self, root):
+        """Collect a widget and all its descendants (best effort)."""
+        out = [root]
+        try:
+            for ch in root.winfo_children():
+                out.extend(self._walk_widgets(ch))
+        except Exception:
+            pass
+        return out
+
+    def _register_solo_irrelevant_frame(self, frame):
+        """Frames registered here are greyed out while Solo check is ON."""
+        try:
+            self._solo_irrelevant_frames = getattr(self, '_solo_irrelevant_frames', [])
+            self._solo_irrelevant_frames.append(frame)
+        except Exception:
+            pass
+
+    def _update_solo_check_state(self, *_args):
+        """Solo check uses only model / prompt version / seed / agents / decoding.
+        While ON, every registered irrelevant section (network, personas, RAG,
+        world/bias/global constraints, step overrides) plus the Steps entry is
+        disabled, with each widget's previous state saved; turning it OFF
+        restores those states and re-runs the conditional-greying updaters so
+        rules like 'custom counts only when dist=custom_counts' win again."""
+        on = (getattr(self, 'solo_check_var', tk.StringVar(value='off')).get() or 'off').strip().lower() == 'on'
+        targets = []
+        for fr in list(getattr(self, '_solo_irrelevant_frames', [])):
+            targets.extend(self._walk_widgets(fr))
+        steps_entry = getattr(self, '_steps_entry', None)
+        if steps_entry is not None:
+            targets.append(steps_entry)
+        saved = getattr(self, '_solo_saved_states', None)
+        if on:
+            if saved is None:
+                saved = {}
+                for w in targets:
+                    try:
+                        cur = str(w.cget('state'))
+                    except Exception:
+                        continue
+                    saved[w] = cur
+                    try:
+                        w.configure(state='disabled')
+                    except Exception:
+                        pass
+                self._solo_saved_states = saved
+        else:
+            if saved:
+                for w, st in saved.items():
+                    try:
+                        w.configure(state=st)
+                    except Exception:
+                        pass
+            self._solo_saved_states = None
+            for fn_name in ('_update_network_controls_state', '_update_rag_controls_state',
+                            '_update_true_open_controls_state', '_update_classic_persona_controls_state',
+                            '_update_json_profile_controls_state', '_update_allowed_update_controls_state',
+                            '_update_light_memory_threshold_state', '_update_model_dependent_controls_state',
+                            '_update_multi_run_controls_state'):
+                try:
+                    getattr(self, fn_name)()
+                except Exception:
+                    pass
 
     def _on_close(self):
         """Handle a Tkinter/UI event and update dependent controls."""
@@ -5670,7 +5833,9 @@ class LauncherUI(tk.Tk):
             script_text = ""
 
         def _supports(flag: str) -> bool:
-            """Helper used by this script to keep the experiment UI and analysis pipeline organized."""
+            """Feature-detect a CLI flag by scanning the target script's source text.
+            Forgiving across script versions; can false-positive if a flag only
+            appears in comments, so keep flag names out of dead text in the mains."""
             return flag.lower() in script_text
 
         think_mode = (getattr(self, "think_mode_var", tk.StringVar(value="off")).get() or "off").strip().lower()
@@ -5723,6 +5888,21 @@ class LauncherUI(tk.Tk):
         allowed_update_mode = self._normalize_allowed_update_mode_ui()
         if _supports("--allowed_update_mode"):
             cmd += ["--allowed_update_mode", allowed_update_mode]
+        validation_strictness = (getattr(self, "validation_strictness_var", tk.StringVar(value="strict")).get() or "strict").strip()
+        if _supports("--validation_strictness"):
+            cmd += ["--validation_strictness", validation_strictness]
+        wrong_side_requery = (getattr(self, "wrong_side_requery_var", tk.StringVar(value="off")).get() or "off").strip()
+        if _supports("--wrong_side_explanation_requery"):
+            cmd += ["--wrong_side_explanation_requery", wrong_side_requery]
+        deterministic = (getattr(self, "deterministic_var", tk.StringVar(value="off")).get() or "off").strip()
+        if _supports("--deterministic"):
+            cmd += ["--deterministic", deterministic]
+        structured_output = (getattr(self, "structured_output_var", tk.StringVar(value="off")).get() or "off").strip()
+        if _supports("--structured_output"):
+            cmd += ["--structured_output", structured_output]
+        solo_check = (getattr(self, "solo_check_var", tk.StringVar(value="off")).get() or "off").strip().lower()
+        if _supports("--solo_check"):
+            cmd += ["--solo_check", solo_check]
 
         ss_unlock = getattr(self, "same_side_edge_unlock_hits_var", tk.StringVar(value="")).get().strip()
         if allowed_update_mode == "free_bounded":
@@ -5795,8 +5975,8 @@ class LauncherUI(tk.Tk):
         # Retrieval / RAG (used when the selected world uses retrieval)
         if world in {"open_rag", "closed_strict_rag"}:
             rag_backend = (getattr(self, "rag_backend_var", tk.StringVar(value="off")).get() or "off").strip().lower()
-            if rag_backend not in {"off", "simple"}:
-                raise ValueError("RAG backend must be 'off' or 'simple'.")
+            if rag_backend not in {"off", "simple", "dense", "graph"}:
+                raise ValueError("RAG backend must be off/simple/dense/graph.")
             if _supports("--rag_backend"):
                 cmd += ["--rag_backend", rag_backend]
             if rag_backend != "off":
@@ -6037,7 +6217,7 @@ class LauncherUI(tk.Tk):
                 if sum(counts) != agents:
                     raise ValueError(f"Custom counts sum to {sum(counts)} but agents is {agents}.")
                 custom_counts = {-2: counts[0], -1: counts[1], 0: counts[2], 1: counts[3], 2: counts[4]}
-                # Pass through to the script (you added this to v5)
+                # Pass through to the simulator's --custom_counts
                 cmd += ["--custom_counts", custom_counts_str]
             else:
                 if opinion_strategy not in v5_dist_presets:
@@ -6306,6 +6486,8 @@ class LauncherUI(tk.Tk):
         ttk.Checkbutton(controls, text="Pause auto-refresh", variable=self._live_pause_var).grid(row=1, column=2, sticky="w", pady=(6, 0), padx=(10, 0))
 
         ttk.Label(controls, textvariable=self._live_status_var, style="Muted.TLabel").grid(row=1, column=3, sticky="e", pady=(6, 0))
+        ttk.Label(controls, text="Opinion-change CSV: the opinion series being watched - attaches automatically to the current run, or Browse any finished run to replay it (Detach stops watching).  Show network: toggle line-chart vs network view.  Follow latest: auto-jump to the newest step as it lands.  Pause auto-refresh: freeze polling while you inspect.  Step slider below: scrub through history.",
+                  style="Muted.TLabel", wraplength=1100, justify="left").grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         try:
             controls.grid_columnconfigure(1, weight=1)

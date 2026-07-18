@@ -66,7 +66,7 @@ DICT_TOPIC_NAME = {
 DICT_TOPIC_FRAMING_STATEMENT = {
     ("v37", "TRUE"): "theory XYZ that claims that the earth is an irregularly shaped ellipsoid rather than flat",
     ("v37", "FALSE"): "the theory XYZ that claims that the Earth is flat",
-    ("v38", "TRUE"): "theory XYZ that claims that the Tyrannosaurus Rex and humans did not co-exist on Earth at the same",
+    ("v38", "TRUE"): "theory XYZ that claims that the Tyrannosaurus Rex and humans did not co-exist on Earth at the same time",
     ("v38", "FALSE"): "theory XYZ that claims that the Tyrannosaurus Rex and humans co-existed on Earth at the same time",
     ("v39", "TRUE"): "theory XYZ that claims that it is not possible for humans to communicate with the dead",
     ("v39", "FALSE"): "theory XYZ that claims that it is possible for humans to communicate with the dead",
@@ -105,7 +105,7 @@ DICT_TOPIC_FRAMING_STATEMENT = {
     ("v104", "TRUE"): "Theory XYZ that claims that tourism is a vital sector for Greece’s economy, providing jobs and revenue",
     ("v104", "FALSE"): "Theory XYZ that claims that tourism has negative impacts on Greece’s environment and local communities",
     ("v105", "TRUE"): "Theory XYZ that claims that Greece was primarily responsible for its own financial crisis due to internal mismanagement and corruption",
-    ("v105", "FALSE"): "“Theory XYZ that claims that foreign institutions and EU policies were primarily responsible for Greece’s financial crisis",
+    ("v105", "FALSE"): "Theory XYZ that claims that foreign institutions and EU policies were primarily responsible for Greece’s financial crisis",
     ("v106", "TRUE"): "Theory XYZ that claims that renewable energy adoption is crucial for Greece’s sustainable development and energy independence",
     ("v106", "FALSE"): "Theory XYZ that claims that renewable energy adoption is impractical for Greece due to its economic costs and reliability issues",
     ("v107", "TRUE"): "Theory XYZ that claims that Greece’s cultural heritage sites should be prioritized for preservation and tourism",
@@ -116,13 +116,13 @@ DICT_TOPIC_FRAMING_STATEMENT = {
     ("v109", "FALSE"): "Theory XYZ that claims that Greece’s education system is fundamentally sound and does not need major changes",
     ("v110", "TRUE"): "Theory XYZ that claims Compulsory military service in Greece is essential for national security and civic responsibility",
     ("v110", "FALSE"): "Theory XYZ that claims Compulsory military service in Greece is unnecessary and infringes on individual freedoms",
-("v111", "TRUE"): "Theory XYZ that claims Religious education in Greek public schools is important for cultural heritage and moral development",
-("v111", "FALSE"): "Theory XYZ that claims Religious education in Greek public schools violates secular principles and individual rights",
-("v112", "TRUE"): "Theory XYZ that claims Greece should prioritize investment in public healthcare to ensure universal access and improve health outcomes",
-("v112", "FALSE"): "Theory XYZ that claims Greece should reduce public healthcare spending and promote private sector involvement to increase efficiency",
+    ("v111", "TRUE"): "Theory XYZ that claims Religious education in Greek public schools is important for cultural heritage and moral development",
+    ("v111", "FALSE"): "Theory XYZ that claims Religious education in Greek public schools violates secular principles and individual rights",
+    ("v112", "TRUE"): "Theory XYZ that claims Greece should prioritize investment in public healthcare to ensure universal access and improve health outcomes",
+    ("v112", "FALSE"): "Theory XYZ that claims Greece should reduce public healthcare spending and promote private sector involvement to increase efficiency",
     ("v113", "TRUE"): "Greece's referendum was a triumph of democracy, empowering citizens to shape their country's future",
-    ("v113", "FALSE"): " Greece's referendum was a failure of democracy, undermining the people's voice in critical national decisions",
-    ("v114", "TRUE"): "Illunimati is a secret society that controls world events from behind the scenes",
+    ("v113", "FALSE"): "Greece's referendum was a failure of democracy, undermining the people's voice in critical national decisions",
+    ("v114", "TRUE"): "Illuminati is a secret society that controls world events from behind the scenes",
     ("v114", "FALSE"): "Illuminati is not a real secret society and does not control world events",
     ("v115", "TRUE"): "Jews control the global financial system and manipulate world events for their benefit",
     ("v115", "FALSE"): "Jews do not control the global financial system and do not manipulate world events for their benefit",
@@ -221,40 +221,23 @@ Bias rule
 }
 
 
-'''
-Future (optional) alternative reverse texts for 2, 4, 6 (use later if/when you want “reverse” to be operationally different).
-
-# 2) default_reverse (no confirmation bias, reverse-aware framing):
-"You exhibit **no confirmation bias**.
-Evaluate the claim exactly as written without being influenced by its polarity/negation.
-Weigh supportive and contradictory points even-handedly, relative to your current opinion."
-
-# 4) confirmation_bias_reverse (weak bias, reverse-aware framing):
-"Your thinking shows **WEAK confirmation bias** (reverse condition).
-You slightly favor arguments that preserve your current opinion and you are slightly more skeptical of contradictory arguments.
-Be careful not to misclassify support vs contradiction due to negations in the claim wording; apply your bias relative to your current opinion."
-
-# 6) strong_confirmation_bias_reverse (strong bias, reverse-aware framing):
-"Your thinking shows **STRONG confirmation bias** (reverse condition).
-You strongly favor arguments that support your current opinion and heavily discount contradictory arguments.
-Do not let claim wording polarity invert what you treat as supportive vs contradictory; apply your bias relative to your current opinion."
-'''
-
 # =====================================================
 # 2. Paths and config
 # =====================================================
 
-# Root where ALL prompts live
-PROMPT_ROOT = Path("prompts") / "opinion_dynamics" / "Flache_2017"
+# Anchor all paths to the project root so the script works from any cwd.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-# Folder that contains the base templates you edited by hand
-# (with {THEORY_STATEMENT} inside them)
+# Root where ALL prompts live
+PROMPT_ROOT = PROJECT_ROOT / "prompts" / "opinion_dynamics" / "Flache_2017"
+
+# Hand-maintained base templates (contain {THEORY_STATEMENT} and {BIAS})
 TEMPLATE_DIR = PROMPT_ROOT / "template"
 CONTROL_TEMPLATE_DIR = PROMPT_ROOT / "control_template"
 LLM_CHECK_TEMPLATE_DIR = PROMPT_ROOT / "llm_check_template"
 
-# list_agent_descriptions.csv lives in your project root
-AGENT_CSV_PATH = Path("list_agent_descriptions.csv")
+# Seed agent CSV copied into every generated variant folder
+AGENT_CSV_PATH = PROJECT_ROOT / "list_agent_descriptions.csv"
 
 # Step files we expect
 FILE_NAMES = [
@@ -355,8 +338,8 @@ def normalize_version(raw: str) -> str:
 
 
 def ensure_templates_and_csv_exist():
+    """Validate that template dirs, their step files, and the agent CSV exist. Raises FileNotFoundError; creates nothing."""
     # Normal templates
-    """Create the shared template files and placeholder CSVs required by generated prompt folders."""
     if not TEMPLATE_DIR.exists():
         raise FileNotFoundError(f"Template directory does not exist: {TEMPLATE_DIR}")
 
@@ -400,7 +383,6 @@ def ensure_templates_and_csv_exist():
         raise FileNotFoundError(
             f"list_agent_descriptions.csv not found at: {AGENT_CSV_PATH}"
         )
-
 
 
 # =====================================================
@@ -469,9 +451,10 @@ def create_prompts_for_version(version_tag: str):
             if BIAS_PLACEHOLDER in text:
                 text = text.replace(BIAS_PLACEHOLDER, bias_text)
 
-            # 3) Fill fact pack
+            # {FACT_PACK} is intentionally NOT filled here: the simulator
+            # substitutes it at run time (fact packs are a runtime condition).
 
-            # Optional cleanup after empty replacements
+            # Collapse blank runs left by empty replacements
             text = re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"
 
             dst.write_text(text, encoding="utf-8")

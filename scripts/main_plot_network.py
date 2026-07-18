@@ -8,6 +8,7 @@ an analysis layer over completed runs.
 
 import argparse
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -17,7 +18,55 @@ import glob
 import re
 import warnings
 import networkx as nx
-import plotly.graph_objects as go
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import run_naming  # shared mode-abbreviation + run-stem naming
+
+
+def _apply_modern_style():
+    """One modern look for every figure: light background, despined axes, a soft
+    horizontal grid, a clean sans-serif font, and a calm categorical palette.
+    Individual plots can still override colours/cmaps; this only sets defaults."""
+    import matplotlib as _mpl
+    _mpl.rcParams.update({
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+        "savefig.facecolor": "white",
+        "figure.dpi": 120,
+        "savefig.dpi": 200,
+        "savefig.bbox": "tight",
+        "font.family": "DejaVu Sans",
+        "font.size": 10.5,
+        "axes.titlesize": 12.5,
+        "axes.titleweight": "bold",
+        "axes.titlepad": 10,
+        "axes.titlecolor": "#1b1e23",
+        "axes.labelsize": 10.5,
+        "axes.labelcolor": "#2b2f36",
+        "axes.edgecolor": "#c9ccd1",
+        "axes.linewidth": 1.0,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.axisbelow": True,
+        "axes.grid": True,
+        "axes.grid.axis": "y",
+        "grid.color": "#e7e9ec",
+        "grid.linewidth": 0.9,
+        "lines.linewidth": 2.0,
+        "lines.solid_capstyle": "round",
+        "xtick.color": "#5b5f66",
+        "ytick.color": "#5b5f66",
+        "xtick.labelsize": 9.5,
+        "ytick.labelsize": 9.5,
+        "legend.frameon": False,
+        "legend.fontsize": 9,
+        "axes.prop_cycle": _mpl.cycler(color=[
+            "#2f6bff", "#e8590c", "#2b8a3e", "#9c36b5",
+            "#e03131", "#0b7285", "#f08c00", "#5c7cfa"]),
+    })
+
+
+_apply_modern_style()
 
 
 def sanitize_model_name_for_path(model_name: str) -> str:
@@ -125,31 +174,11 @@ def _version_root_token(version_set: str) -> str:
 
 
 def _bias_short_token(version_set: str) -> str:
-    """Match the simulator's compact bias naming.
-
-    default -> no, default_reverse -> no_r,
-    confirmation_bias -> weak, confirmation_bias_reverse -> weak_r,
-    strong_confirmation_bias -> strong, strong_confirmation_bias_reverse -> strong_r.
-    """
-    s = str(version_set or "").strip().lower()
-    root = _version_root_token(s).lower()
-    mode = s[len(root):].lstrip("_") if s.startswith(root) else s
-    is_reverse = mode.endswith("_reverse") or mode == "reverse" or "_reverse_" in mode
-    if "strong_confirmation_bias" in mode:
-        return "strong_r" if is_reverse else "strong"
-    if "confirmation_bias" in mode:
-        return "weak_r" if is_reverse else "weak"
-    if mode in {"", "default"}:
-        return "no"
-    if mode == "default_reverse":
-        return "no_r"
-    if "control" in mode:
-        return "control_r" if is_reverse else "control"
-    if "llm_check_true" in mode:
-        return "checktrue_r" if is_reverse else "checktrue"
-    if "llm_check_false" in mode:
-        return "checkfalse_r" if is_reverse else "checkfalse"
-    return _plot_safe_file_token(mode or "no")
+    """Short bias token for the run stem, from the shared naming map (run_naming).
+    default -> no, confirmation_bias(_reverse) -> weak(_r),
+    strong_confirmation_bias(_reverse) -> strong(_r), etc."""
+    _prefix, mode = run_naming.split_version(version_set)
+    return _plot_safe_file_token(run_naming.abbrev_mode(mode) or "no")
 
 
 def _short_run_base_from_args(args) -> str:
@@ -395,9 +424,9 @@ def _build_plot_subdir(csv_path: str, args) -> str:
     version_root = extract_version_root(args.version_set)
 
 
-    csv_basename = os.path.basename(csv_path)
-    csv_stem, _ = os.path.splitext(csv_basename)
-    csv_stem = csv_stem.replace("_opinion_change", "")
+    # Output folder uses the compact run stem (short bias abbreviation, no
+    # date/distribution), regardless of the input CSV's own naming scheme.
+    run_stem = _short_run_base_from_args(args)
 
     out_dir = os.path.join(
         "results",
@@ -406,21 +435,35 @@ def _build_plot_subdir(csv_path: str, args) -> str:
         model_name,
         "plots",
         version_root,
-        csv_stem,
+        run_stem,
     )
     os.makedirs(out_dir, exist_ok=True)
     return out_dir
 
 
 
+def _shorten_run_stem(stem: str) -> str:
+    """Convert a run stem in either naming scheme to the compact one:
+    <out>_<agents>_<steps>_<version-full>_<date>_<dist>  ->  <out>_<agents>_<steps>_<version-short>.
+    An already-short stem is returned unchanged (abbreviation is idempotent)."""
+    m = re.match(r"^(.+?)_(\d+)_(\d+)_(v\d+.*?)_(\d{6,8})_[A-Za-z0-9_]+$", stem)  # long
+    if not m:
+        m = re.match(r"^(.+?)_(\d+)_(\d+)_(v\d+.*)$", stem)  # short / no date-dist
+    if not m:
+        return stem
+    out, ag, st, ver = m.group(1), m.group(2), m.group(3), m.group(4)
+    return f"{out}_{ag}_{st}_{run_naming.abbrev_version(ver)}"
+
+
 def _get_run_stem(csv_path: str) -> str:
-    """Derive the run stem used as a prefix for plot and diagnostic output files."""
+    """Derive the compact run stem used as a prefix for plot/diagnostic output files.
+    Accepts either input naming scheme; always returns the short scheme."""
     csv_basename = os.path.basename(csv_path)
     csv_stem, _ = os.path.splitext(csv_basename)
     # Earlier runtime used *_network_opinion_change; qwen13+ uses *_opinion_change.
     csv_stem = csv_stem.replace("_network_opinion_change", "")
     csv_stem = csv_stem.replace("_opinion_change", "")
-    return csv_stem
+    return _shorten_run_stem(csv_stem)
 
 def build_output_timeseries_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
@@ -638,20 +681,6 @@ def build_output_source_provenance_csv_path(args, csv_path: str) -> str:
     return os.path.join(out_dir, f"{run_stem}_source_provenance.csv")
 
 
-# Backward-compatible aliases for earlier function names / IDE references
-def build_output_source_provenance_path(args, csv_path: str) -> str:
-    """Build the output path for one generated plot or diagnostic artifact."""
-    return build_output_source_provenance_plot_path(args, csv_path)
-
-def _build_output_source_provenance_plot_path(args, csv_path: str) -> str:
-    """Build a derived object, command, path, or UI component used by the local pipeline."""
-    return build_output_source_provenance_plot_path(args, csv_path)
-
-def _build_output_source_provenance_csv_path(args, csv_path: str) -> str:
-    """Build a derived object, command, path, or UI component used by the local pipeline."""
-    return build_output_source_provenance_csv_path(args, csv_path)
-
-
 def build_output_individual_trajectories_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
@@ -861,7 +890,10 @@ def plot_opinion_trajectories(
 
 
 def compute_B_D_P(df, agent_cols, row_index):
-    """Compute population mean belief, diversity, and polarization for a belief vector."""
+    """B = mean belief, D = population std (ddof=0), P = (var - B^2)/(var + B^2)
+    in [-1, 1]: -1 = consensus at an extreme, +1 = perfect split, 0 when var = B^2.
+    NOTE: tools/eval_runs.py reports a DIFFERENT P (4*pos*neg share bipolarization);
+    the two are not comparable - each report states its own formula."""
     opinions = df.iloc[row_index][agent_cols].values.astype(float)
     B = opinions.mean()
     D = opinions.std(ddof=0)
@@ -1640,7 +1672,12 @@ def generate_network_frames_and_gif(
     for name in agent_names:
         if name not in G0:
             G0.add_node(name)
-    pos = nx.kamada_kawai_layout(G0)
+    try:
+        pos = nx.kamada_kawai_layout(G0)
+    except (ImportError, ModuleNotFoundError):
+        # kamada_kawai needs scipy; spring_layout is a dependency-free fallback
+        # that gives a comparable force-directed layout (seeded for stability).
+        pos = nx.spring_layout(G0, seed=42)
 
     # 4) Frames dir INSIDE plot_dir (next to other plots)
     run_stem = _get_run_stem(csv_path)
@@ -1775,6 +1812,13 @@ def generate_network_3d_html(
     Output:
       <plot_dir>/<out_prefix>_network3d.html
     """
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        print("[network3d] Skipping interactive 3D HTML: plotly is not installed "
+              "(pip install plotly). All static plots are unaffected.")
+        return
+
     results_dir = os.path.dirname(csv_path)
 
     # 1) Load opinions (same as your GIF function)
@@ -2347,6 +2391,17 @@ def save_run_report_summary(
     else:
         for numerator in ["total_moves", "positive_moves", "negative_moves", "bridge_to_zero_count", "bridge_across_zero_count", "moved_toward_speaker_count", "moved_away_from_speaker_count", "hard_repairs", "soft_cleanups", "step2_fallbacks", "listener_pipeline_artifacts"]:
             row[f"{numerator}_rate"] = 0.0
+
+    # Hold-adjusted metrics (policy A): forced holds are kept but separated from
+    # genuine interactions, so move-rate / stability are not inflated by interactions
+    # where the speaker produced no usable tweet (listener_pipeline_artifact == 1).
+    _holds = int(row.get("listener_pipeline_artifacts", 0))
+    _genuine = max(0, n_interactions - _holds)
+    row["genuine_interactions"] = _genuine
+    row["held_fraction"] = float(_holds / n_interactions) if n_interactions > 0 else 0.0
+    row["genuine_move_rate"] = float(row.get("total_moves", 0) / _genuine) if _genuine > 0 else 0.0
+    row["genuine_no_change_events"] = max(0, int(row.get("no_change_events", 0)) - _holds)
+    row["genuine_stay_rate"] = float(row["genuine_no_change_events"] / _genuine) if _genuine > 0 else 0.0
 
     # RAG retrieval direction is a tracked metric whenever RAG retrieval logging exists:
     # it shows whether support/challenge/context retrieval coincided with positive, negative, or no movement.
@@ -3301,7 +3356,9 @@ def save_persona_trait_delta(agent_summary_csv_path: str, out_csv_path: str) -> 
                 "min_total_delta": float(d.min()),
                 "max_total_delta": float(d.max()),
             })
-    out = pd.DataFrame(rows)
+    cols = ["trait", "trait_value", "n_agents", "mean_total_delta",
+            "median_total_delta", "min_total_delta", "max_total_delta"]
+    out = pd.DataFrame(rows, columns=cols)  # keep headers even when rows is empty
     if not out.empty:
         out = out.sort_values(["trait", "mean_total_delta", "trait_value"], ascending=[True, False, True]).reset_index(drop=True)
     out.to_csv(out_csv_path, index=False)
@@ -4309,6 +4366,220 @@ def plot_network_influence_diagnostics(
     except Exception as e:
         print(f"[network-influence] Skipping centrality-weighted B: {e}")
 
+# =====================================================================
+# Opinion-distribution heatmap + fragmentation over time
+# Two standard opinion-dynamics figures built only from the opinion_change
+# CSV (always present): a time x rating density raster, and the effective
+# number of opinion clusters (inverse-Simpson) as a fragmentation/echo-chamber
+# time series. Neither existed before; both are single-run, dependency-free.
+# =====================================================================
+
+def build_output_opinion_heatmap_path(args, csv_path: str) -> str:
+    """Build the output path for the opinion-distribution-over-time heatmap."""
+    out_dir = _build_plot_subdir(csv_path, args)
+    run_stem = _get_run_stem(csv_path)
+    return os.path.join(out_dir, f"{run_stem}_opinion_heatmap.{args.figure_file_type}")
+
+
+def build_output_fragmentation_path(args, csv_path: str) -> str:
+    """Build the output path for the opinion-fragmentation-over-time plot."""
+    out_dir = _build_plot_subdir(csv_path, args)
+    run_stem = _get_run_stem(csv_path)
+    return os.path.join(out_dir, f"{run_stem}_fragmentation.{args.figure_file_type}")
+
+
+def _opinion_matrix_from_csv(csv_path: str, num_agents: int):
+    """Return (steps, agent_cols, counts) where counts[r, t] = number of agents
+    holding rating r (order -2..+2) at step index t. Non-integer / out-of-range
+    cells are dropped from that step's counts."""
+    df = pd.read_csv(csv_path)
+    if df.empty or "time_step" not in df.columns:
+        return None, None, None
+    agent_cols = list(df.columns)[-num_agents:]
+    states = [-2, -1, 0, 1, 2]
+    idx = {s: i for i, s in enumerate(states)}
+    steps = df["time_step"].to_numpy()
+    counts = np.zeros((len(states), len(df)), dtype=float)
+    for t in range(len(df)):
+        row = pd.to_numeric(df.iloc[t][agent_cols], errors="coerce").dropna()
+        for v in row:
+            iv = int(round(v))
+            if iv in idx:
+                counts[idx[iv], t] += 1
+    return steps, agent_cols, counts
+
+
+def plot_opinion_heatmap(csv_path: str, out_path: str, fig_type: str, num_agents: int) -> None:
+    """Density raster of the opinion distribution over time: x = step, y = rating
+    (-2..+2), colour = number of agents. The compact static counterpart of the
+    distribution GIF - the canonical opinion-dynamics figure that shows a run
+    heading to consensus (one band) vs bipolarisation (two bands)."""
+    steps, agent_cols, counts = _opinion_matrix_from_csv(csv_path, num_agents)
+    if counts is None:
+        return
+    states = [-2, -1, 0, 1, 2]
+    fig, ax = plt.subplots(figsize=(9, 3.4) if fig_type == "png" else (7.2, 3.0), dpi=150)
+    extent = [float(steps[0]), float(steps[-1]), -2.5, 2.5]
+    im = ax.imshow(counts, aspect="auto", origin="lower", extent=extent,
+                   cmap="magma", interpolation="nearest")
+    ax.set_yticks(states)
+    ax.set_xlabel("Time step")
+    ax.set_ylabel("Rating")
+    ax.set_title("Opinion distribution over time (agents per rating)")
+    cbar = fig.colorbar(im, ax=ax, pad=0.01)
+    cbar.set_label("agents")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved opinion heatmap to: {out_path}")
+
+
+def plot_fragmentation_over_time(csv_path: str, out_path: str, fig_type: str, num_agents: int) -> None:
+    """Fragmentation / echo-chamber time series. For each step: the effective
+    number of opinion clusters = inverse Simpson index 1 / sum(p_i^2) over the
+    five rating shares p_i (Hill number of order 2), plus the raw count of
+    distinct ratings still held. Effective-N near 1 = consensus; near 2 =
+    bipolarisation; higher = fragmentation. Inverse-Simpson is preferred over a
+    raw distinct count because it discounts ratings held by only a stray agent."""
+    steps, agent_cols, counts = _opinion_matrix_from_csv(csv_path, num_agents)
+    if counts is None:
+        return
+    totals = counts.sum(axis=0)
+    totals[totals == 0] = 1.0
+    shares = counts / totals
+    simpson = (shares ** 2).sum(axis=0)
+    simpson[simpson == 0] = np.nan
+    eff_n = 1.0 / simpson
+    distinct = (counts > 0).sum(axis=0)
+
+    fig, ax = plt.subplots(figsize=(8, 4) if fig_type == "png" else (6.4, 3.2), dpi=150)
+    ax.plot(steps, eff_n, color="#6a1b9a", linewidth=2.0,
+            label="effective clusters (1 / Σp²)")
+    ax.plot(steps, distinct, color="#9e9e9e", linewidth=1.3, linestyle="--",
+            label="distinct ratings held")
+    ax.axhline(1.0, color="#2166ac", linewidth=1.0, alpha=0.7)
+    ax.annotate("consensus", xy=(steps[-1], 1.0), fontsize=8, color="#2166ac",
+                va="bottom", ha="right")
+    ax.axhline(2.0, color="#b2182b", linewidth=1.0, alpha=0.5)
+    ax.annotate("bipolarisation", xy=(steps[-1], 2.0), fontsize=8, color="#b2182b",
+                va="bottom", ha="right")
+    ax.set_ylim(0.8, 5.2)
+    ax.set_xlabel("Time step")
+    ax.set_ylabel("Number of opinion clusters")
+    ax.set_title("Opinion fragmentation over time")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved fragmentation plot to: {out_path}")
+
+
+def build_output_streamgraph_path(args, csv_path: str) -> str:
+    """Build the output path for the opinion-share streamgraph."""
+    out_dir = _build_plot_subdir(csv_path, args)
+    run_stem = _get_run_stem(csv_path)
+    return os.path.join(out_dir, f"{run_stem}_opinion_streamgraph.{args.figure_file_type}")
+
+
+def build_output_ridgeline_path(args, csv_path: str) -> str:
+    """Build the output path for the opinion-distribution ridgeline."""
+    out_dir = _build_plot_subdir(csv_path, args)
+    run_stem = _get_run_stem(csv_path)
+    return os.path.join(out_dir, f"{run_stem}_opinion_ridgeline.{args.figure_file_type}")
+
+
+def plot_opinion_streamgraph(csv_path: str, out_path: str, fig_type: str, num_agents: int) -> None:
+    """Streamgraph of the five rating shares over time: each band is one rating,
+    its thickness the fraction of agents holding it, stacked around a moving
+    centre (ThemeRiver style). Reads the flow of the population between camps at
+    a glance - a widening blue/red pair is polarisation, one band swallowing the
+    rest is consensus."""
+    steps, agent_cols, counts = _opinion_matrix_from_csv(csv_path, num_agents)
+    if counts is None:
+        return
+    states = [-2, -1, 0, 1, 2]
+    totals = counts.sum(axis=0)
+    totals[totals == 0] = 1.0
+    shares = counts / totals  # 5 x T, columns sum to 1
+    cmap = _rating_color_map()
+    # centre the stack: baseline = -cumulative/2 so the river is symmetric
+    centre = shares.sum(axis=0) / 2.0
+    base = -centre.copy()
+    fig, ax = plt.subplots(figsize=(9, 4) if fig_type == "png" else (7.2, 3.4), dpi=150)
+    for i, st in enumerate(states):
+        top = base + shares[i]
+        ax.fill_between(steps, base, top, color=cmap.get(st, "#999999"),
+                        alpha=0.9, linewidth=0.0, label=f"rating {st:+d}")
+        base = top
+    ax.set_yticks([])
+    ax.set_xlabel("Time step")
+    ax.set_title("Opinion shares over time (streamgraph)")
+    ax.grid(False)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=5, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved opinion streamgraph to: {out_path}")
+
+
+def plot_opinion_ridgeline(csv_path: str, out_path: str, fig_type: str, num_agents: int, n_slices: int = 7) -> None:
+    """Ridgeline (joyplot) of the opinion distribution at evenly spaced time
+    slices, earliest at the bottom. Each row is a lightly smoothed density over
+    the -2..+2 ratings at that step, so the shift from a broad/bimodal shape to a
+    single peak (or two) is visible as the ridges evolve up the figure."""
+    steps, agent_cols, counts = _opinion_matrix_from_csv(csv_path, num_agents)
+    if counts is None:
+        return
+    states = np.array([-2, -1, 0, 1, 2], dtype=float)
+    T = counts.shape[1]
+    if T < 2:
+        return
+    idxs = np.linspace(0, T - 1, min(n_slices, T)).round().astype(int)
+    idxs = sorted(set(idxs.tolist()))
+    # smooth the 5-point distribution onto a fine grid for a ridgeline look
+    grid = np.linspace(-2.4, 2.4, 120)
+    bw = 0.5
+    cmap = _rating_color_map()
+    fig, ax = plt.subplots(figsize=(8, 5) if fig_type == "png" else (6.4, 4.0), dpi=150)
+    offset_step = 1.0
+    peak = 0.0
+    dens_list = []
+    for k, ti in enumerate(idxs):
+        w = counts[:, ti]
+        if w.sum() == 0:
+            dens = np.zeros_like(grid)
+        else:
+            dens = np.zeros_like(grid)
+            for val, wi in zip(states, w):
+                dens += wi * np.exp(-0.5 * ((grid - val) / bw) ** 2)
+            dens = dens / dens.max() if dens.max() > 0 else dens
+        dens_list.append(dens)
+        peak = max(peak, dens.max())
+    for k, (ti, dens) in enumerate(zip(idxs, dens_list)):
+        y0 = k * offset_step
+        # mean-opinion tint for this slice
+        w = counts[:, ti]
+        mean_op = float((states * w).sum() / w.sum()) if w.sum() else 0.0
+        near = int(round(min(2, max(-2, mean_op))))
+        col = cmap.get(near, "#4c6ef5")
+        ax.fill_between(grid, y0, y0 + dens, color=col, alpha=0.75, linewidth=0.0, zorder=len(idxs) - k)
+        ax.plot(grid, y0 + dens, color="white", linewidth=1.0, zorder=len(idxs) - k)
+        ax.text(-2.55, y0 + 0.05, f"step {int(steps[ti])}", fontsize=8, va="bottom", ha="right")
+    ax.set_yticks([])
+    ax.set_xticks([-2, -1, 0, 1, 2])
+    ax.set_xlabel("Rating")
+    ax.set_xlim(-2.9, 2.5)
+    ax.set_title("Opinion distribution over time (ridgeline)")
+    ax.grid(False)
+    for sp in ("left", "right", "top"):
+        ax.spines[sp].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved opinion ridgeline to: {out_path}")
+
+
 def main():
     """Run the full plotting/post-processing pipeline for one completed simulation run."""
     args = parse_args()
@@ -4355,6 +4626,33 @@ def main():
         fig_type=args.figure_file_type,
         num_agents=args.num_agents,
     )
+    try:
+        plot_opinion_heatmap(
+            csv_path=csv_path,
+            out_path=build_output_opinion_heatmap_path(args, csv_path),
+            fig_type=args.figure_file_type,
+            num_agents=args.num_agents,
+        )
+        plot_fragmentation_over_time(
+            csv_path=csv_path,
+            out_path=build_output_fragmentation_path(args, csv_path),
+            fig_type=args.figure_file_type,
+            num_agents=args.num_agents,
+        )
+        plot_opinion_streamgraph(
+            csv_path=csv_path,
+            out_path=build_output_streamgraph_path(args, csv_path),
+            fig_type=args.figure_file_type,
+            num_agents=args.num_agents,
+        )
+        plot_opinion_ridgeline(
+            csv_path=csv_path,
+            out_path=build_output_ridgeline_path(args, csv_path),
+            fig_type=args.figure_file_type,
+            num_agents=args.num_agents,
+        )
+    except Exception as e:
+        print(f"[distribution] Skipping opinion heatmap / fragmentation / streamgraph / ridgeline: {e}")
     out_bdp_csv = build_output_bdp_timeseries_path(args, csv_path)
     save_BDP_timeseries(
         csv_path=csv_path,
@@ -4667,27 +4965,33 @@ def main():
     gif_path = build_output_distribution_gif_path(args, csv_path)
     make_distribution_gif(frame_paths, gif_path, fps=2)
 
-    # Network frames + GIF (saved in the SAME plot folder)
-    plot_dir = _build_plot_subdir(csv_path, args)
-    out_prefix = args.output_file if args.output_file else f"seed{args.seed}"
-    generate_network_frames_and_gif(
-        csv_path=csv_path,
-        plot_dir=plot_dir,
-        out_prefix=out_prefix,
-        version_set=args.version_set,
-        num_agents=args.num_agents,
-        frame_duration=0.5,
-        num_fades=2,
-    )
-    generate_network_3d_html(
-        csv_path=csv_path,
-        plot_dir=plot_dir,
-        out_prefix=out_prefix,
-        version_set=args.version_set,
-        num_agents=args.num_agents,
-        step_stride=1,     # set to 5 if you want it lighter
-        layout_seed=42,
-    )
+    # Network frames + GIF + interactive 3D (saved in the SAME plot folder).
+    # Wrapped like the other optional layers: these are the heaviest artifacts
+    # and depend on per-step edge files being present, so a failure here must
+    # not discard the static plots already written above.
+    try:
+        plot_dir = _build_plot_subdir(csv_path, args)
+        out_prefix = args.output_file if args.output_file else f"seed{args.seed}"
+        generate_network_frames_and_gif(
+            csv_path=csv_path,
+            plot_dir=plot_dir,
+            out_prefix=out_prefix,
+            version_set=args.version_set,
+            num_agents=args.num_agents,
+            frame_duration=0.5,
+            num_fades=2,
+        )
+        generate_network_3d_html(
+            csv_path=csv_path,
+            plot_dir=plot_dir,
+            out_prefix=out_prefix,
+            version_set=args.version_set,
+            num_agents=args.num_agents,
+            step_stride=1,     # set to 5 if you want it lighter
+            layout_seed=42,
+        )
+    except Exception as e:
+        print(f"[network-animation] Skipping network GIF / 3D HTML due to error: {e}")
 
     
         # -----------------------------

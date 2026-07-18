@@ -16,30 +16,61 @@
 !assets/
 !prompts/
 !scripts/
+!tools/
+!tests/
+!docs/
+
+# --- tools: analysis/eval ecosystem (all offline-tested) ---------
+# caches and generated outputs never go up
+tools/embed_cache_*.json
+tools/__pycache__/
+
+# --- tests: headless launcher smoke + tkinter stub -----------------
+tests/__pycache__/
+tests/tkstub/**/__pycache__/
+
+# --- docs: ONLY the user-facing GUI/tool guides go up; the research
+#     meta (research_log, roads_not_taken, paper_pipeline, persona_review,
+#     repo_review) stays local. -----------------------------------------
+docs/*
+!docs/eval_judge_guide.md
+!docs/ui_launcher_guide.md
+!docs/main_plot_guide.md
+!docs/multihop_corpus_spec.md
 
 # --- assets: only the README image ---------------------------------
-assets/**
+assets/*
 !assets/network_opinion_dynamics.png
 
 # --- prompts: everything except python caches ----------------------
 prompts/**/__pycache__/
 prompts/**/*.pyc
+# generated benchmark outputs stay local (code, not outputs, goes up)
+prompts/**/rag_corpus/benchmark/
+# v123 prompt set: not yet live-tested - excluded until it runs
+prompts/opinion_dynamics/Flache_2017/v123/
+# stray utility file, removed from tracking 2026-07-17
+prompts/opinion_dynamics/Flache_2017/template/a.py
 
 # --- scripts: ignore all, then allow the used files + config -------
-scripts/**
-!scripts/config/
-!scripts/config/persona_profiles.json
-!scripts/config/persona_schema.json
-!scripts/.launcher_settings.json
+# .launcher_settings.json is intentionally NOT tracked: it is per-user mutable
+# state the launcher rewrites on exit (falls back to built-in defaults if absent).
+# opinion_dynamics_v3_check.py (dead deprecation wrapper) is also excluded.
+scripts/*
+!scripts/compare_runs.py
 !scripts/create_prompts.py
 !scripts/main_plot_network.py
 !scripts/network_models.py
 !scripts/opinion_dynamics_test_network_qwen.py
-!scripts/opinion_dynamics_v3_check.py
+!scripts/plot_launcher.py
 !scripts/persona_profiles_support.py
+!scripts/run_naming.py
 !scripts/topic_persona_fields.py
 !scripts/topic_persona_profiles.py
 !scripts/ui_lancher11.py
+!scripts/config/
+!scripts/config/persona_profiles.json
+!scripts/config/persona_schema.json
 
 # never commit caches / envs anywhere
 **/__pycache__/
