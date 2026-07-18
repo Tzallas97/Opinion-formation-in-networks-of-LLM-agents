@@ -24,6 +24,8 @@
 # caches and generated outputs never go up
 tools/embed_cache_*.json
 tools/__pycache__/
+tools/node_modules/
+tools/.eval_launcher_settings.json
 
 # --- tests: headless launcher smoke + tkinter stub -----------------
 tests/__pycache__/
@@ -75,3 +77,4 @@ scripts/*
 # never commit caches / envs anywhere
 **/__pycache__/
 *.pyc
+**/node_modules/
