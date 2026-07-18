@@ -2,7 +2,7 @@
 
 Agent-based simulation of how opinions form and spread through a network of
 agents, where every agent is a local large language model (Qwen, served by
-Ollama). Agents hold a position on a topic from −2 (reject) to +2 (accept),
+Ollama). Agents hold a position on a topic from −2 (fully reject) to +2 (fully accept),
 talk to their neighbours over a network, and update what they believe.
 
 ![Two populations of LLM agents forming opinions over a network](assets/network_opinion_dynamics.png)
