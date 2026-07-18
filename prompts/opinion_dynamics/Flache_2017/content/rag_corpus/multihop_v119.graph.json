@@ -1,0 +1,27 @@
+{
+  "comment": "Entity alias map for the graph retriever (seed matching + tag canonicalisation). Retriever-visible. Matching is case-insensitive, word-boundary, longest-alias-first with span consumption (so 'p. harris' is consumed before bare 'harris' can match). Bare ambiguous forms resolve to the entity listing them under aliases with 'primary_for'.",
+  "entities": {
+    "North Tower": {"aliases": ["north tower", "twin towers", "both towers", "the towers", "the tower", "towers", "tower"]},
+    "D. Harris": {"aliases": ["d. harris", "harris"], "primary_for": ["harris"]},
+    "P. Harris": {"aliases": ["p. harris"]},
+    "Meridian Salvage": {"aliases": ["meridian salvage co.", "meridian salvage", "meridian"]},
+    "debris contract": {"aliases": ["debris-removal contract", "debris removal contract", "debris removal", "debris contract"]},
+    "incident survey": {"aliases": ["incident survey", "fire survey", "2001 survey"]},
+    "Fenwick Analysis": {"aliases": ["fenwick analysis", "fenwick"]},
+    "floor trusses": {"aliases": ["floor trusses", "truss design", "trusses", "truss"]},
+    "official inquiry": {"aliases": ["official inquiry", "the inquiry"]},
+    "bakery": {"aliases": ["bakery"]},
+    "Aldercrest Holdings": {"aliases": ["aldercrest holdings", "aldercrest"]},
+    "insurance policy": {"aliases": ["terrorism-specific insurance", "insurance policy", "the policy"]},
+    "R. Vasquez": {"aliases": ["r. vasquez", "vasquez"]},
+    "Castellan Group": {"aliases": ["castellan group", "castellan"]},
+    "T. Mercer": {"aliases": ["t. mercer", "mercer"]},
+    "debris audit": {"aliases": ["debris audit"]},
+    "Halden Yard": {"aliases": ["halden yard"]},
+    "independent metallurgists": {"aliases": ["independent metallurgists"]},
+    "dispatch logs": {"aliases": ["dispatch logs"]},
+    "Verity Project": {"aliases": ["verity project"]},
+    "youth league": {"aliases": ["youth basketball league", "youth league"]},
+    "rail depot": {"aliases": ["rail maintenance depot", "rail depot"]}
+  }
+}

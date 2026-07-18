@@ -1,0 +1,15 @@
+{
+  "comment": "Entity alias map for the graph retriever (seed matching + tag canonicalisation). Retriever-visible. Longest-match wins; bare ambiguous surface forms resolve to the entity listed under 'primary_for'.",
+  "entities": {
+    "North Tower": {"aliases": ["north tower", "twin towers", "the towers", "the tower", "towers", "tower"]},
+    "D. Harris": {"aliases": ["d. harris", "harris"], "primary_for": ["harris"]},
+    "P. Harris": {"aliases": ["p. harris"]},
+    "Meridian Salvage": {"aliases": ["meridian salvage co.", "meridian salvage", "meridian"]},
+    "debris contract": {"aliases": ["debris-removal contract", "debris removal contract", "debris removal", "debris contract"]},
+    "incident survey": {"aliases": ["incident survey", "fire survey", "2001 survey"]},
+    "Fenwick Analysis": {"aliases": ["fenwick analysis", "fenwick"]},
+    "floor trusses": {"aliases": ["floor trusses", "truss design", "trusses", "truss"]},
+    "official inquiry": {"aliases": ["official inquiry", "the inquiry"]},
+    "bakery": {"aliases": ["bakery"]}
+  }
+}

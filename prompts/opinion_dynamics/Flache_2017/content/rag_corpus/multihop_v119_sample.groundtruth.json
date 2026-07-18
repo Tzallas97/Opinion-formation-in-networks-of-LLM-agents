@@ -1,0 +1,58 @@
+{
+  "comment": "EVALUATION ONLY. Never readable by any retriever and never rendered into any prompt. Used by the Stage A chain-recovery benchmark and the Stage B inference-emergence metric.",
+  "chains": [
+    {
+      "chain_id": "C1",
+      "members": ["mh_c1_01", "mh_c1_02", "mh_c1_03"],
+      "direction": "supportive",
+      "hops": 2,
+      "link_entities": ["D. Harris", "Meridian Salvage"],
+      "implied_conclusion": "The engineer who certified the tower's structural integrity was later employed by the company that profited from clearing its debris - an undisclosed conflict of interest inside the official record."
+    },
+    {
+      "chain_id": "C2",
+      "members": ["mh_c2_01", "mh_c2_02", "mh_c2_03"],
+      "direction": "criticism",
+      "hops": 2,
+      "link_entities": ["incident survey", "floor trusses"],
+      "implied_conclusion": "The tower's documented multi-hour fires were independently shown sufficient to buckle its actual floor structure - the collapse needs no demolition to be explained."
+    }
+  ],
+  "distractors": [
+    {
+      "chain_id": "D1",
+      "members": ["mh_d1_01", "mh_d1_02"],
+      "connects_via": ["D. Harris"],
+      "note": "Connected dead end: attaches to the C1 branch through D. Harris but implies nothing about the claim. Its 'conclusion' slot is empty on purpose - used as the null baseline for inference emergence.",
+      "implied_conclusion": null
+    }
+  ],
+  "roles": {
+    "mh_c1_01": "chain", "mh_c1_02": "chain", "mh_c1_03": "chain",
+    "mh_c2_01": "chain", "mh_c2_02": "chain", "mh_c2_03": "chain",
+    "mh_d1_01": "distractor", "mh_d1_02": "distractor",
+    "mh_s_01": "standalone", "mh_s_02": "standalone", "mh_s_03": "standalone",
+    "mh_s_04": "standalone", "mh_s_05": "standalone", "mh_s_06": "standalone",
+    "mh_s_07": "standalone"
+  },
+  "test_queries": [
+    {
+      "qid": "q1",
+      "text": "Twin towers were brought down by a conspiracy of government insiders to justify wars and increase surveillance. They keep lying about the tower's collapse.",
+      "expected_seeds": ["North Tower"],
+      "expected_chains": ["C1", "C2"]
+    },
+    {
+      "qid": "q2",
+      "text": "Everyone keeps citing the engineer Harris who certified the tower - look closer at where he went next.",
+      "expected_seeds": ["D. Harris", "North Tower"],
+      "expected_chains": ["C1"]
+    },
+    {
+      "qid": "q3",
+      "text": "The fires were burning across whole floors of the tower for hours before it fell.",
+      "expected_seeds": ["North Tower"],
+      "expected_chains": ["C2"]
+    }
+  ]
+}
