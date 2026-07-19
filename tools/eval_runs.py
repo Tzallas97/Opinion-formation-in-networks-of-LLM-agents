@@ -23,6 +23,13 @@ from __future__ import annotations
 import argparse, csv, glob, json, math, os, random, sys
 from collections import Counter
 
+# scripts/ holds the shared metric + naming modules used across the repo
+_SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+import opinion_metrics  # shared B/D/P definitions
+import run_naming      # shared stem/sibling resolution + tolerant CSV open
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -109,17 +116,10 @@ def find_run_dirs(root):
     return sorted(set(out))
 
 def bdp(vals):
-    '''B = mean belief, D = population std (ddof=0), P = 4*pos*neg share
-    bipolarization (pos/neg = shares strictly beyond +-0.5): 1.0 = perfect
-    50/50 split, 0.0 = one-sided. NOTE: scripts/main_plot_network.py reports
-    a DIFFERENT P, (var - B^2)/(var + B^2); the two are not comparable -
-    each report states its own formula.'''
-    n = len(vals) or 1
-    B = sum(vals) / n
-    D = (sum((x - B) ** 2 for x in vals) / n) ** 0.5
-    pos = sum(1 for x in vals if x > 0.5) / n
-    neg = sum(1 for x in vals if x < -0.5) / n
-    return B, D, 4 * pos * neg
+    '''B = mean belief, D = population std (ddof=0), P = 4*pos*neg bipolarization.
+    Thin wrapper over scripts/opinion_metrics.py, which is the single definition
+    shared by the simulator, the plots and the eval tools.'''
+    return opinion_metrics.bdp(vals)
 
 def load_run(spec):
     """Load one run from a spec: a run folder, or a loose opinion_change CSV
@@ -132,16 +132,20 @@ def load_run(spec):
         cut = b.lower().find("opinion_change")
         prefix = b[:cut].rstrip("_-") if cut > 0 else None
     def pickf(*pats):
+        # Old runs put the date on either side of the network infix depending on
+        # the artifact, so a literal prefix can miss a sibling that is right
+        # there. run_naming.sibling_patterns tries the literal prefix first, then
+        # the core stem.
         if prefix:
-            for pat in pats:
-                f = _one(run_dir, prefix + "*" + pat.lstrip("*"))
+            for pat in run_naming.sibling_patterns(os.path.basename(spec), *pats):
+                f = _one(run_dir, pat)
                 if f: return f
             return None
         return _pick(run_dir, *pats)
     r = {"dir": run_dir, "name": spec_name(spec), "spec": spec}
     # --- opinion series ---
     oc = spec if is_file else pickf("*network_opinion_change*.csv", "*opinion_change*.csv")
-    rows = list(csv.reader(open(oc, encoding="utf-8")))
+    rows = list(csv.reader(run_naming.open_text(oc)))
     names = rows[0][1:]
     series = {n: [] for n in names}
     steps = []
@@ -188,7 +192,7 @@ def load_run(spec):
     ic = pickf("*network_interactions*.csv", "*interactions*.csv")
     meta = {}
     if ic:
-        for row in csv.DictReader(open(ic, encoding="utf-8")):
+        for row in csv.DictReader(run_naming.open_text(ic)):
             if not meta:
                 meta = {"world": (row.get("World") or "").strip(),
                         "rag": (row.get("RAG Content Mode") or "").strip(),
@@ -214,7 +218,7 @@ def load_run(spec):
     mj = _one(run_dir, (prefix + "*metrics*.json") if prefix else "metrics_*.json")
     if mj:
         try:
-            data = json.load(open(mj, encoding="utf-8"))
+            data = json.load(run_naming.open_text(mj))
             m = dict(data.get("metrics", {}) or {})
             m.update({("summary::" + k): v for k, v in (data.get("summary", {}) or {}).items()})
             cfg = data.get("config", {}) or {}
@@ -227,7 +231,7 @@ def load_run(spec):
         rm = pickf("*run_metrics*.csv")
         if rm:
             try:
-                for row in csv.DictReader(open(rm, encoding="utf-8")):
+                for row in csv.DictReader(run_naming.open_text(rm)):
                     try: m[str(row.get("Metric", "")).strip()] = float(row.get("Count") or 0)
                     except Exception: pass
             except Exception:

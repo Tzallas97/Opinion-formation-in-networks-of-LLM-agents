@@ -21,6 +21,7 @@ import networkx as nx
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import run_naming  # shared mode-abbreviation + run-stem naming
+import opinion_metrics  # shared B/D/P definitions
 
 
 def _apply_modern_style():
@@ -811,11 +812,7 @@ def plot_opinion_trajectories(
     opinions = df[agent_cols].to_numpy()
 
     # ---- compute B, D, P time series ----
-    B_series = opinions.mean(axis=1)
-    D_series = opinions.std(axis=1, ddof=0)
-    var = D_series ** 2
-    denom = var + B_series ** 2
-    P_series = np.where(denom == 0, 0.0, (var - B_series ** 2) / denom)
+    B_series, D_series, P_series = opinion_metrics.bdp_series(opinions)
 
     # ---- colors by initial opinion ----
     opinion_colors = {
@@ -890,16 +887,10 @@ def plot_opinion_trajectories(
 
 
 def compute_B_D_P(df, agent_cols, row_index):
-    """B = mean belief, D = population std (ddof=0), P = (var - B^2)/(var + B^2)
-    in [-1, 1]: -1 = consensus at an extreme, +1 = perfect split, 0 when var = B^2.
-    NOTE: tools/eval_runs.py reports a DIFFERENT P (4*pos*neg share bipolarization);
-    the two are not comparable - each report states its own formula."""
+    """B = mean belief, D = population std (ddof=0), P = 4*pos*neg bipolarization.
+    Definitions live in scripts/opinion_metrics.py."""
     opinions = df.iloc[row_index][agent_cols].values.astype(float)
-    B = opinions.mean()
-    D = opinions.std(ddof=0)
-    var = D ** 2
-    denom = var + B ** 2
-    P = 0.0 if denom == 0 else (var - B ** 2) / denom
+    B, D, P = opinion_metrics.bdp(opinions)
     return opinions, B, D, P
 
 def compute_markov_transition_matrix_from_interactions(interactions_csv_path: str, step_range=None):
@@ -2188,11 +2179,7 @@ def _belief_stats_from_values(values) -> dict:
     vals = np.asarray(pd.Series(values).dropna().astype(float).tolist(), dtype=float)
     if vals.size == 0:
         return {"B": 0.0, "D": 0.0, "P": 0.0, "entropy": 0.0, "positive_share": 0.0, "negative_share": 0.0, "zero_share": 0.0, "edge_share": 0.0}
-    B = float(vals.mean())
-    D = float(vals.std(ddof=0))
-    var = D ** 2
-    denom = var + B ** 2
-    P = 0.0 if denom == 0 else float((var - B ** 2) / denom)
+    B, D, P = opinion_metrics.bdp(vals)
     counts = _rating_distribution_counts(vals)
     n = float(vals.size)
     return {

@@ -5,6 +5,12 @@ Offline, no dependencies at view time. Requires networkx for layout at build tim
 import csv, glob, os, json, sys, re
 import networkx as nx
 
+# scripts/ holds the shared metric + naming modules used across the repo
+_SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+import opinion_metrics  # shared B/D/P definitions
+
 def _clean(t):
     t = str(t or "").strip()
     t = re.sub(r'^FINAL_RATING:\s*-?\d+\s*(?:\n|\\n|\s)*(?:TWEET:|EXPLANATION:)\s*', '', t, flags=re.I)
@@ -67,9 +73,8 @@ def build_data(run_dir):
             if series[n][i] != prev:
                 changes[n].append({"step": steps[i], "from": prev, "to": series[n][i], "dir": 1 if series[n][i] > prev else -1}); prev = series[n][i]
     def bdp(v):
-        B=sum(v)/len(v); D=(sum((x-B)**2 for x in v)/len(v))**0.5
-        p=sum(1 for x in v if x>0.5)/len(v); n_=sum(1 for x in v if x<-0.5)/len(v)
-        return round(B,3),round(D,3),round(4*p*n_,3)
+        B, D, P = opinion_metrics.bdp(v)
+        return round(B,3), round(D,3), round(P,3)
     bdpser=[dict(zip(("step","B","D","P"),(steps[i],)+bdp([series[n][i] for n in names]))) for i in range(len(steps))]
     cfg = {}
     mj = one("metrics_*.json")

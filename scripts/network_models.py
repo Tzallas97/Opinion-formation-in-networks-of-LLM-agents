@@ -4,7 +4,7 @@ The simulator imports this module to build Watts-Strogatz, Erdos-Renyi, and Bara
 """
 
 import random
-from typing import Dict, Set, Sequence, Mapping, Union, Any
+from typing import Dict, Set, Sequence, Mapping, Union, Any, Callable
 import networkx as nx
 
 OpinionContainer = Union[Sequence[int], Mapping[int, int]]
@@ -775,161 +775,6 @@ def compute_pair_score(
     return s_total
 
 
-def maybe_add_new_friends_before_interaction(
-    listener_idx: int,
-    speaker_idx: int,
-    neighbors: Dict[int, Set[int]],
-    opinions: OpinionContainer,
-    attributes: Mapping[int, Mapping[str, Any]],
-    step: int,
-    burnin_steps: int = 50,
-    add_score_threshold: float = 140.0,
-    p_add: float = 0.07,
-    max_new_edges_per_step: int = 1,
-    max_degree: int = 8,
-    rng: random.Random | None = None,
-) -> None:
-    """
-    Called at the START of an interaction between (listener_idx, speaker_idx).
-    Not called by the current simulator (networks are static during a run);
-    retained, working, for evolving-network experiments.
-
-    Models: "we go for coffee and I might bring a friend".
-
-    - Only runs after burnin_steps.
-    - Only creates edges via friends-of-friends:
-        * L with neighbors of S
-        * S with neighbors of L
-    - New edge (focal, k) created only if:
-        * same opinion (|op_focal - op_k| == 0)
-        * compute_pair_score(focal, k, ...) >= add_score_threshold
-        * probability p_add
-        * both endpoint degrees stay <= max_degree
-        * at most max_new_edges_per_step per call (both sides combined)
-    """
-    if rng is None:
-        rng = random
-
-    if step < burnin_steps:
-        return
-    if listener_idx not in neighbors or speaker_idx not in neighbors:
-        return
-
-    degree = {i: len(neighs) for i, neighs in neighbors.items()}
-    new_edges_added = 0
-
-    def try_form_edges(focal: int, via: int) -> None:
-        """Attempt friend-of-friend edge additions for one focal endpoint during evolving-network updates."""
-        nonlocal new_edges_added
-        if new_edges_added >= max_new_edges_per_step:
-            return
-
-        focal_neighs = neighbors[focal]
-        via_neighs = neighbors[via]
-
-        # Candidates: neighbors of 'via' that are not focal and not already neighbors of 'focal'
-        candidates = [
-            k for k in via_neighs
-            if k != focal and k not in focal_neighs
-        ]
-
-        rng.shuffle(candidates)
-
-        for k in candidates:
-            if new_edges_added >= max_new_edges_per_step:
-                break
-            if degree[focal] >= max_degree or degree[k] >= max_degree:
-                continue
-
-            op_f = opinions[focal]
-            op_k = opinions[k]
-            if op_f is None or op_k is None:
-                continue
-
-            # EXACT same opinion required
-            try:
-                d_op_fk = abs(int(op_f) - int(op_k))
-            except Exception:
-                d_op_fk = 999
-
-            if d_op_fk != 0:
-                continue
-
-            s_fk = compute_pair_score(focal, k, opinions, attributes)
-            if s_fk >= add_score_threshold and rng.random() < p_add:
-                neighbors[focal].add(k)
-                neighbors[k].add(focal)
-                degree[focal] += 1
-                degree[k] += 1
-                new_edges_added += 1
-
-    # Listener may meet speaker's friends
-    try_form_edges(listener_idx, speaker_idx)
-    # Speaker may meet listener's friends
-    try_form_edges(speaker_idx, listener_idx)
-
-
-
-def maybe_cut_edge_after_interaction(
-    listener_idx: int,
-    speaker_idx: int,
-    neighbors: Dict[int, Set[int]],
-    opinions: OpinionContainer,
-    attributes: Mapping[int, Mapping[str, Any]],
-    step: int,
-    burnin_steps: int = 50,
-    cut_score_threshold: float = 60.0,
-    soft_cut_distance: int = 2,
-    p_cut: float = 0.3,
-    min_degree: int = 2,
-    rng: random.Random | None = None,
-) -> None:
-    """
-    Called at the END of an interaction between (listener_idx, speaker_idx),
-    AFTER the listener's opinion has potentially changed.
-    Not called by the current simulator (networks are static during a run);
-    retained, working, for evolving-network experiments.
-
-    Edge (L,S) is considered weak if:
-      - S_LS <= cut_score_threshold  (low overall similarity)
-      - and opinion distance >= soft_cut_distance (meaningful disagreement)
-
-    If weak and both nodes have degree > min_degree,
-    cut edge with probability p_cut.
-    """
-    if rng is None:
-        rng = random
-
-    if step < burnin_steps:
-        return
-    if listener_idx not in neighbors or speaker_idx not in neighbors:
-        return
-    if speaker_idx not in neighbors[listener_idx]:
-        return
-
-    degree = {i: len(neighs) for i, neighs in neighbors.items()}
-
-    op_l = opinions[listener_idx]
-    op_s = opinions[speaker_idx]
-    if op_l is None or op_s is None:
-        return
-
-    try:
-        d_op = abs(int(op_l) - int(op_s))
-    except Exception:
-        return
-
-    s_ls = compute_pair_score(listener_idx, speaker_idx, opinions, attributes)
-
-    weak_edge = (s_ls <= cut_score_threshold and d_op >= soft_cut_distance)
-
-    if weak_edge and degree[listener_idx] > min_degree and degree[speaker_idx] > min_degree:
-        if rng.random() < p_cut:
-            neighbors[listener_idx].remove(speaker_idx)
-            neighbors[speaker_idx].remove(listener_idx)
-
-
-
 def compute_opinion_only_score(
     i: int,
     j: int,
@@ -947,6 +792,20 @@ def compute_opinion_only_score(
 
     d_op_int = int(min(max(d_op, 0), 4))  # clamp 0..4
     return float(OPINION_POINTS.get(d_op_int, 0))
+
+
+def opinion_only_pair_score(i, j, opinions, attributes=None) -> float:
+    """4-arg adapter so an opinion-only score is a drop-in for any pair scorer.
+
+    This is the DEFAULT tie-formation scorer for evolving networks. It ignores
+    `attributes` deliberately: `compute_pair_score` reads a legacy attribute
+    scheme (pol_score, edu_level, age, ethnicity, gender, occupation) that the
+    current persona-profile system does not populate and that no actual run has
+    used, so scoring on it mixes in constant noise. A profile-aware scorer is a
+    planned makeover; when it exists, pass it to evolve_once as `score_fn` -
+    the evolution logic does not change.
+    """
+    return compute_opinion_only_score(i, j, opinions)
 
 
 def choose_partner_scoring(
@@ -1050,3 +909,259 @@ def choose_neighbor_scoring(
         rng=rng,
         score_mode=score_mode,
     )
+
+
+# ==================================================================== directed
+# Directed adjacency: follows are stored as two maps so in-degree and
+#
+# One edge is TWO dict entries, not two edges: following[a] gets b and
+# followers[b] gets a. With reciprocal=True every write is mirrored, so
+# following == followers identically and the structure is equivalent to the
+# undirected Dict[int, Set[int]] the rest of the code has always used.
+#
+# Why direction is needed at all: in an undirected graph in-degree and
+# out-degree are the same number, so "who has an audience" cannot be expressed.
+# out-degree = whom I listen to (information diet).
+# in-degree  = who listens to me (influence).
+
+
+class DirectedNetwork:
+    """Adjacency with orientation, and reciprocity as a policy rather than a fork.
+
+    The two maps are always maintained together - callers cannot update one and
+    forget the other, which is the failure mode this class exists to prevent.
+    """
+
+    __slots__ = ("following", "followers", "reciprocal", "n", "changes")
+
+    def __init__(self, num_agents: int, reciprocal: bool = True):
+        self.n = int(num_agents)
+        self.reciprocal = bool(reciprocal)
+        self.following = {i: set() for i in range(self.n)}
+        self.followers = {i: set() for i in range(self.n)}
+        self.changes = []          # (step, src, dst, "add"|"cut", reason)
+
+    # ---------------------------------------------------------------- building
+
+    @classmethod
+    def from_undirected(cls, neighbors, num_agents: int, reciprocal: bool = True):
+        """Build from the legacy Dict[int, Set[int]] the constructors return."""
+        net = cls(num_agents, reciprocal=reciprocal)
+        for src, nbrs in (neighbors or {}).items():
+            for dst in nbrs:
+                net.add_edge(int(src), int(dst))
+        return net
+
+    def to_undirected_map(self):
+        """Legacy view: {i: set of everyone i is tied to, either direction}.
+
+        Only equal to `following` when reciprocal. Provided so consumers that
+        have not been audited for orientation keep working, never as the shape
+        new code should read.
+        """
+        return {i: set(self.following[i]) | set(self.followers[i]) for i in range(self.n)}
+
+    # ----------------------------------------------------------------- editing
+
+    def has_edge(self, src: int, dst: int) -> bool:
+        return int(dst) in self.following.get(int(src), ())
+
+    def add_edge(self, src: int, dst: int, step: int = -1, reason: str = "") -> bool:
+        """Add src -> dst (and the mirror when reciprocal). False if it existed."""
+        src, dst = int(src), int(dst)
+        if src == dst or not (0 <= src < self.n and 0 <= dst < self.n):
+            return False
+        if self.has_edge(src, dst):
+            return False
+        self.following[src].add(dst)
+        self.followers[dst].add(src)
+        self.changes.append((step, src, dst, "add", reason))
+        if self.reciprocal and not self.has_edge(dst, src):
+            self.following[dst].add(src)
+            self.followers[src].add(dst)
+            self.changes.append((step, dst, src, "add", reason + "|mirror"))
+        return True
+
+    def remove_edge(self, src: int, dst: int, step: int = -1, reason: str = "") -> bool:
+        """Remove src -> dst (and the mirror when reciprocal). False if absent."""
+        src, dst = int(src), int(dst)
+        if not self.has_edge(src, dst):
+            return False
+        self.following[src].discard(dst)
+        self.followers[dst].discard(src)
+        self.changes.append((step, src, dst, "cut", reason))
+        if self.reciprocal and self.has_edge(dst, src):
+            self.following[dst].discard(src)
+            self.followers[src].discard(dst)
+            self.changes.append((step, dst, src, "cut", reason + "|mirror"))
+        return True
+
+    # ---------------------------------------------------------------- measures
+
+    def out_degree(self, i: int) -> int:
+        """How many agents i listens to. Zero means i is deaf: it can never be
+        assigned a speaker, so it leaves the simulation without any error."""
+        return len(self.following.get(int(i), ()))
+
+    def in_degree(self, i: int) -> int:
+        """How many agents listen to i. This is the influence measure that does
+        not exist in an undirected graph."""
+        return len(self.followers.get(int(i), ()))
+
+    def edge_count(self) -> int:
+        """Directed edges. A reciprocal pair counts as two."""
+        return sum(len(v) for v in self.following.values())
+
+    def edges(self):
+        """(src, dst, is_mutual) for every directed edge, sorted.
+
+        Never dedupe with `if i < j` the way undirected exports do - under
+        direction that silently drops every high-to-low edge.
+        """
+        out = []
+        for src in range(self.n):
+            for dst in sorted(self.following[src]):
+                out.append((src, dst, self.has_edge(dst, src)))
+        return out
+
+    def isolated(self):
+        """Agents that hear nobody. Under direction these are invisible to a
+        degree check that only counts ties, because they may still have
+        followers."""
+        return [i for i in range(self.n) if self.out_degree(i) == 0]
+
+    def check_invariants(self):
+        """Raise if the two maps disagree, or if reciprocity is violated while
+        claimed. Cheap; call it in tests and after any bulk edit."""
+        for src in range(self.n):
+            for dst in self.following[src]:
+                if src not in self.followers[dst]:
+                    raise AssertionError(f"following has {src}->{dst}, followers does not")
+        for dst in range(self.n):
+            for src in self.followers[dst]:
+                if dst not in self.following[src]:
+                    raise AssertionError(f"followers has {src}->{dst}, following does not")
+        if self.reciprocal:
+            for src in range(self.n):
+                if self.following[src] != self.followers[src]:
+                    raise AssertionError(f"reciprocal claimed but agent {src} differs")
+        return True
+
+
+def evolve_once(
+    net: "DirectedNetwork",
+    listener_idx: int,
+    speaker_idx: int,
+    opinions: OpinionContainer,
+    attributes: Mapping[int, Mapping[str, Any]],
+    step: int,
+    burnin_steps: int = 50,
+    add_score_threshold: float = 100.0,
+    cut_score_threshold: float = 25.0,
+    soft_cut_distance: int = 2,
+    p_add: float = 0.07,
+    max_degree: int = 8,
+    min_out_degree: int = 2,
+    score_fn: Callable[..., float] | None = None,
+    rng: random.Random | None = None,
+) -> tuple[int, int]:
+    """Coupled one-in-one-out rewiring on a DirectedNetwork. Returns (added, cut).
+
+    Add and cut are COUPLED so the edge count cannot drift. An independent
+    add-probability and cut-probability would let density wander, and density
+    drift confounds "the network rewired" with "the network got denser" - denser
+    graphs converge faster for reasons unrelated to opinion.
+
+    Coupling rule: a cut is attempted only if an add succeeded, and the add is
+    ROLLED BACK when no edge meets the cut criteria. Edge count is therefore
+    exactly conserved and the rule cannot deadlock. Degree *sequence* is left
+    free on purpose - fixing it would keep a hub a hub by construction and rule
+    out the outcome the experiment exists to observe.
+
+    Scoring defaults to opinion only (`score_fn=opinion_only_pair_score`); pass a
+    profile-aware scorer here when one exists, without touching this logic. The
+    default thresholds are opinion-scaled: an exact-agreement candidate scores
+    100 (so add_score_threshold=100 means "agree exactly"), and a tie at opinion
+    distance >= 2 scores <= 25 (so cut_score_threshold=25 catches it). The old
+    140 / 60 defaults were sized for the multi-attribute score and are
+    unreachable on the 0..100 opinion-only scale.
+
+    Direction: candidates come from `following[via]` - I discover people that
+    someone I already listen to listens to - and the new edge is focal -> k.
+    Under reciprocal=True the mirror is written automatically, reproducing the
+    old symmetric behaviour exactly.
+
+    `min_out_degree` guards OUT-degree, not total ties. An agent with
+    out-degree 0 hears nobody and can never be assigned a speaker: it leaves the
+    simulation silently while still looking connected, because it may retain
+    followers. The undirected `min_degree` check cannot see this.
+    """
+    if rng is None:
+        rng = random
+    if score_fn is None:
+        score_fn = opinion_only_pair_score
+    if step < burnin_steps:
+        return (0, 0)
+
+    added = _evolve_try_add(net, listener_idx, speaker_idx, opinions, attributes,
+                            step, add_score_threshold, p_add, max_degree, score_fn, rng)
+    if not added:
+        return (0, 0)
+
+    cut = _evolve_try_cut(net, listener_idx, speaker_idx, opinions, attributes,
+                          step, cut_score_threshold, soft_cut_distance,
+                          min_out_degree, score_fn, rng)
+    if not cut:
+        net.remove_edge(added[0], added[1], step=step, reason="rollback:no_cut_available")
+        return (0, 0)
+    return (1, 1)
+
+
+def _evolve_try_add(net, listener_idx, speaker_idx, opinions, attributes, step,
+                    add_score_threshold, p_add, max_degree, score_fn, rng):
+    """Friends-of-friends addition. Returns the (src, dst) added, or None."""
+    for focal, via in ((listener_idx, speaker_idx), (speaker_idx, listener_idx)):
+        if focal >= net.n or via >= net.n:
+            continue
+        candidates = [k for k in net.following[via]
+                      if k != focal and k not in net.following[focal]]
+        rng.shuffle(candidates)
+        for k in candidates:
+            if net.out_degree(focal) >= max_degree or net.in_degree(k) >= max_degree:
+                continue
+            op_f, op_k = opinions[focal], opinions[k]
+            if op_f is None or op_k is None:
+                continue
+            try:
+                if abs(int(op_f) - int(op_k)) != 0:      # exact agreement, as before
+                    continue
+            except Exception:
+                continue
+            if score_fn(focal, k, opinions, attributes) >= add_score_threshold \
+                    and rng.random() < p_add:
+                if net.add_edge(focal, k, step=step, reason="fof_add"):
+                    return (focal, k)
+    return None
+
+
+def _evolve_try_cut(net, listener_idx, speaker_idx, opinions, attributes, step,
+                    cut_score_threshold, soft_cut_distance, min_out_degree, score_fn, rng):
+    """Cut the listener->speaker tie when it is weak. Returns True if cut."""
+    if not net.has_edge(listener_idx, speaker_idx):
+        return False
+    op_l, op_s = opinions[listener_idx], opinions[speaker_idx]
+    if op_l is None or op_s is None:
+        return False
+    try:
+        d_op = abs(int(op_l) - int(op_s))
+    except Exception:
+        return False
+    score = score_fn(listener_idx, speaker_idx, opinions, attributes)
+    if not (score <= cut_score_threshold and d_op >= soft_cut_distance):
+        return False
+    # Guard OUT-degree on both sides: never leave an agent unable to hear anyone.
+    if net.out_degree(listener_idx) <= min_out_degree:
+        return False
+    if net.reciprocal and net.out_degree(speaker_idx) <= min_out_degree:
+        return False
+    return net.remove_edge(listener_idx, speaker_idx, step=step, reason="weak_tie_cut")

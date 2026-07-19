@@ -1,0 +1,13 @@
+# Line endings are pinned here so a fresh clone is byte-identical regardless of
+# each machine's core.autocrlf setting.
+* text=auto eol=lf
+
+# CLAUDE.md makes CRLF a hard requirement for the launcher: keep it CRLF on
+# checkout everywhere.
+scripts/ui_lancher11.py text eol=crlf
+
+# Never normalise binary assets.
+*.png binary
+*.pdf binary
+*.pptx binary
+*.gif binary

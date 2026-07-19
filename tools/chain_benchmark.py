@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Chain-recovery benchmark - no LLM, runs anywhere, evaluates the three
-retrieval architectures on the multihop corpus's ground truth.
+"""Chain-recovery benchmark - no LLM, runs anywhere, evaluates the retrieval
+architectures on the multihop corpus's ground truth.
 
 This is the offline GATE before any simulation run uses these retrievers:
 if graph does not clearly beat lexical/dense at recovering full chains
@@ -15,10 +15,16 @@ Queries expecting many chains (e.g. the bare claim) cannot fit them all in
 k slots, so the summary reports both the mean over (query, chain) pairs and
 the best-chain-per-query mean (can the retriever nail at least ONE chain?).
 
+Two of the backends are CONTROLS. lexical+seeds and lexical+tags
+are lexical rankers handed the same entity information the graph gets - query-side
+and index-side respectively. They answer the standing objection that the graph wins
+on information rather than on access structure: the gate below requires graph to
+beat the controls, not merely plain lexical.
+
 Usage:
   python tools/chain_benchmark.py CORPUS.jsonl [--k 4] [--max-hops 3]
-         [--backends lexical,graph,dense] [--embed-model nomic-embed-text]
-         [--out DIR]
+         [--backends lexical,lexical+seeds,lexical+tags,graph,dense]
+         [--embed-model nomic-embed-text] [--k-sweep 4,8,12,16,24,32] [--out DIR]
 Dense needs Ollama once (embeddings cached); it is skipped with a note if
 unreachable. Output: OUT/chain_benchmark.md (default: <corpus dir>/benchmark/).
 """
@@ -34,7 +40,11 @@ def main():
     ap.add_argument("corpus")
     ap.add_argument("--k", type=int, default=4)
     ap.add_argument("--max-hops", type=int, default=3)
-    ap.add_argument("--backends", default="lexical,graph,dense")
+    ap.add_argument("--backends",
+                    default="lexical,lexical+seeds,lexical+tags,graph,dense")
+    ap.add_argument("--k-sweep", default="",
+                    help="comma-separated k values; adds a full-chain-vs-budget "
+                         "table (dense is excluded - it would re-embed per k)")
     ap.add_argument("--embed-model", default="nomic-embed-text")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
@@ -58,6 +68,10 @@ def main():
                 dbg = {}
                 if b == "lexical":
                     top = R.lexical_rank(q["text"], snips, a.k)
+                elif b == "lexical+seeds":
+                    top = R.lexical_seeds_rank(q["text"], snips, alias_map, a.k)
+                elif b == "lexical+tags":
+                    top = R.lexical_tags_rank(q["text"], snips, alias_map, a.k)
                 elif b == "graph":
                     top = R.graph_rank(q["text"], snips, alias_map, a.k, a.max_hops, debug=dbg)
                 elif b == "dense":
@@ -101,7 +115,12 @@ def main():
         others = [s["best_chain_full_rate"] for b, s in summaries.items() if b != "graph"]
         if others and g > max(others) and summaries["graph"]["mean_recovery"] >= max(
                 s["mean_recovery"] for b, s in summaries.items() if b != "graph") + 0.15:
-            gate = "PASS - ο graph υπερτερεί καθαρά στο full-chain recovery."
+            ctrl = [b for b in ("lexical+seeds", "lexical+tags") if b in summaries]
+            gate = ("PASS - ο graph υπερτερεί καθαρά στο full-chain recovery"
+                    + (f", ΚΑΙ έναντι των information-equalised controls ({', '.join(ctrl)}) "
+                       "- άρα η διαφορά δεν είναι πληροφοριακή." if ctrl else
+                       " (ΧΩΡΙΣ controls: τρέξε lexical+seeds/lexical+tags για να "
+                       "αποκλείσεις την πληροφοριακή εξήγηση)."))
         elif others:
             gate = "FAIL/REWORK - ο graph ΔΕΝ διαχωρίζει αρκετά· χρειάζεται δουλειά στο corpus ή στο ranking πριν από κάθε simulation run."
         else:
@@ -125,6 +144,44 @@ def main():
         L.append("")
         for b, msg in skipped.items():
             L.append(f"- `{b}` skipped: {msg}")
+    if any(b.startswith("lexical+") for b in summaries):
+        L += ["",
+              "`lexical+seeds` / `lexical+tags` are controls: lexical ranking with the "
+              "graph's entity information added query-side and index-side. If they do not close "
+              "the gap, the graph's advantage is access structure, not information."]
+
+    # ---- k sweep (optional): full-chain rate vs retrieval budget ----
+    if a.k_sweep:
+        ks = [int(x) for x in a.k_sweep.split(",") if x.strip()]
+        sweep_backends = [b for b in backends if b != "dense"]
+        L += ["", "## Full-chain rate vs retrieval budget", "",
+              "| retriever | " + " | ".join(f"k={k}" for k in ks) + " |",
+              "|---" * (len(ks) + 1) + "|"]
+        for b in sweep_backends:
+            cells = []
+            for k in ks:
+                hit = tot = 0
+                for q in queries:
+                    if b == "lexical":
+                        top = set(R.lexical_rank(q["text"], snips, k))
+                    elif b == "lexical+seeds":
+                        top = set(R.lexical_seeds_rank(q["text"], snips, alias_map, k))
+                    elif b == "lexical+tags":
+                        top = set(R.lexical_tags_rank(q["text"], snips, alias_map, k))
+                    elif b == "graph":
+                        top = set(R.graph_rank(q["text"], snips, alias_map, k, a.max_hops))
+                    else:
+                        continue
+                    for cid in q.get("expected_chains", []):
+                        mem = set(chains[cid]["members"])
+                        tot += 1
+                        hit += int(mem <= top)
+                cells.append(f"{hit / (tot or 1):.2f}")
+            L.append(f"| **{b}** | " + " | ".join(cells) + " |")
+        sizes = sorted({len(c["members"]) for c in gt["chains"]})
+        L += ["", f"Chain sizes: {sizes} - k below the chain size makes a full chain "
+                  "impossible, so a low score there is a budget artefact, not a ranking failure."]
+
     L += ["", f"**Gate:** {gate}", "", "## Per query (τι επέστρεψε ο καθένας)", ""]
     for i, q in enumerate(queries):
         L.append(f"**{q['qid']}** - \"{q['text'][:100]}...\" (expects {', '.join(q['expected_chains'])})")

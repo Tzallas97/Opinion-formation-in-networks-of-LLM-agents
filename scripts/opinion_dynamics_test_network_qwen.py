@@ -23,7 +23,10 @@ if str(ROOT) not in sys.path:
 from prompts.opinion_dynamics.Flache_2017.content.fact_packs import FACT_PACKS
 from prompts.opinion_dynamics.Flache_2017.content.world_rules import WORLD_RULES as EXTERNAL_WORLD_RULES, WORLD_LABELS
 from network_models import build_small_world, build_erdos_renyi, build_barabasi_albert, choose_partner_scoring
+from network_models import DirectedNetwork, evolve_once  # coevolving network, opt-in via --network_evolves
+import event_injection  # timed population-level shock, opt-in via --event_step
 import run_naming  # shared mode-abbreviation + run-stem naming
+import opinion_metrics  # shared B/D/P definitions
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -916,20 +919,11 @@ def _compute_bdp_from_beliefs(beliefs):
     """
     Compute the population-level B, D, and P metrics from current beliefs.
     
-        B is the mean belief, D is the population standard deviation, and P compares variance against
-        squared mean. This function is the single source for the trajectory metrics exported at every
-        time step and reported in experiment reviews.
+        B is the mean belief, D is the population standard deviation, and P is the bipolarization
+        share 4*pos*neg. The definitions live in scripts/opinion_metrics.py so that the simulator,
+        the plots and the eval tools cannot drift apart.
     """
-    vals = [float(x) for x in (beliefs or [])]
-    if not vals:
-        return 0.0, 0.0, 0.0
-    arr = np.asarray(vals, dtype=float)
-    B = float(arr.mean())
-    D = float(arr.std(ddof=0))
-    var = D ** 2
-    denom = var + B ** 2
-    P = 0.0 if denom == 0 else float((var - B ** 2) / denom)
-    return B, D, P
+    return opinion_metrics.bdp(beliefs)
 
 
 def _unanimous_belief(list_agents) -> int | None:
@@ -3683,6 +3677,71 @@ parser.add_argument(
     help="If interaction_selection=homophily: 'full' uses opinion+persona scoring; 'opinion_only' uses only opinion similarity (same mapping as the full score's opinion component).",
 )
 
+
+# --- Event injection. All default-off: with --event_step unset (<=0)
+#     no event fires and the run is byte-identical. ---
+parser.add_argument(
+    "--event_step", default=-1, type=int,
+    help="1-indexed step at which a one-off event is broadcast to every agent. "
+         "<=0 disables it. Fire it AFTER opinions have settled, or it perturbs a "
+         "still-moving trajectory and measures nothing.",
+)
+parser.add_argument(
+    "--event_text", default="", type=str,
+    help="The event every agent reacts to, e.g. 'NASA announced the Moon landings "
+         "were staged'. Empty disables the event even if --event_step is set.",
+)
+parser.add_argument(
+    "--event_persist", default="reaction", choices=["reaction", "headline", "both"], type=str,
+    help="What stays in memory after the event. reaction=impulse (ages out, "
+         "measures recovery/hysteresis); headline=step change (pinned, never ages "
+         "out, measures a new equilibrium); both=event+reaction pinned.",
+)
+
+# --- Coevolving network. All default-off: with --network_evolves
+#     absent the run is byte-identical to a static-network run. ---
+parser.add_argument(
+    "--network_evolves",
+    action="store_true",
+    help="Let the network rewire during the run (add one edge, cut one edge per "
+         "eligible interaction, so the edge count is conserved). Off by default; "
+         "when off the topology is static exactly as before.",
+)
+parser.add_argument(
+    "--evolve_directed",
+    action="store_true",
+    help="With --network_evolves: treat follows as one-way (Twitter-style, "
+         "in-degree != out-degree). Default is reciprocal (Facebook-style), "
+         "which reproduces the symmetric static behaviour.",
+)
+parser.add_argument(
+    "--evolve_burnin", default=50, type=int,
+    help="Steps before rewiring starts, so it acts on formed opinions not the seed.",
+)
+parser.add_argument(
+    "--evolve_p_add", default=0.07, type=float,
+    help="Per-eligible-interaction probability of attempting a friend-of-friend add.",
+)
+parser.add_argument(
+    "--evolve_add_threshold", default=100.0, type=float,
+    help="Min tie score to add. On the opinion-only scale (0..100) 100 means "
+         "'agree exactly'. Lower to let near-agreement form ties.",
+)
+parser.add_argument(
+    "--evolve_cut_threshold", default=25.0, type=float,
+    help="Max tie score to cut. On the opinion-only scale a tie at opinion "
+         "distance >=2 scores <=25, so 25 cuts those.",
+)
+parser.add_argument(
+    "--evolve_soft_cut_distance", default=2, type=int,
+    help="Min opinion distance for a tie to be cuttable.",
+)
+parser.add_argument(
+    "--evolve_min_out_degree", default=2, type=int,
+    help="Never cut an agent's last-but-one out-edge; keeps everyone able to hear "
+         "someone. Note: in Barabasi-Albert with m=2 many nodes start at degree 2, "
+         "so a value of 2 blocks most cuts - lower it or raise m to see rewiring.",
+)
 
 parser.add_argument(
     "--max_step_change",
@@ -7215,7 +7274,7 @@ class Agent:
                     )
                 self._append_memory_event(prompt, current_interaction_type=current_interaction_type, rating_snapshot=self.current_belief)
 
-    def _append_memory_event(self, prompt_text: str, *, current_interaction_type: str = '', rating_snapshot=None):
+    def _append_memory_event(self, prompt_text: str, *, current_interaction_type: str = '', rating_snapshot=None, pinned: bool = False):
         """
         Append one structured event to the light-memory buffer.
         
@@ -7246,6 +7305,9 @@ class Agent:
             'prompt': prompt,
             'interaction_type': str(current_interaction_type or '').strip().lower(),
             'rating': rating_value,
+            # Pinned events (a persisting event headline) are never aged
+            # out by the light-memory selector, so they colour every later prompt.
+            'pinned': bool(pinned),
         })
         self._rebuild_light_memory_history()
 
@@ -7295,7 +7357,14 @@ class Agent:
                 selected_ids.add(seq)
                 if len(extra_own) >= LIGHT_MEMORY_EXTRA_OWN_TWEETS:
                     break
-        return sorted((recent_events + extra_own), key=lambda e: int(e.get('seq', 0)))
+        # Force-keep pinned events regardless of the recency window; when
+        # nothing is pinned this dict is exactly recent_events + extra_own, so a run
+        # with no event is unaffected.
+        chosen = {int(e.get('seq')): e for e in (recent_events + extra_own)}
+        for evt in events:
+            if evt.get('pinned'):
+                chosen[int(evt.get('seq'))] = evt
+        return sorted(chosen.values(), key=lambda e: int(e.get('seq', 0)))
 
     def _rebuild_light_memory_history(self):
         """
@@ -15960,7 +16029,11 @@ def main(
     # suffix (see scripts/run_naming.py). Every artifact below derives its file
     # name from os.path.basename(csv_folder), so the folder name IS the stem.
     _run_stem = run_naming.run_stem(
-        args.output_file.split(".cs")[0], args.num_agents, args.num_steps, args.version_set
+        os.path.splitext(args.output_file)[0],
+        args.num_agents,
+        args.num_steps,
+        args.version_set,
+        strict=True,
     )
     csv_folder = os.path.join(path_result, _run_stem)
 
@@ -16094,9 +16167,60 @@ def main(
         early_stop_step = None
         early_stop_reason = ''
 
+        # --- Coevolving network setup. dir_net stays None unless
+        #     --network_evolves is set, so the default path is untouched. When on,
+        #     neighbors is aliased to dir_net.following: rewiring the directed graph
+        #     is then visible to speaker selection for free, with no other change to
+        #     the loop. Fully-mixed runs (net_type == "none") do not evolve - there
+        #     is no edge set to rewire. ---
+        dir_net = None
+        if getattr(args, "network_evolves", False) and net_type != "none":
+            dir_net = DirectedNetwork.from_undirected(
+                neighbors, num_agents,
+                reciprocal=not getattr(args, "evolve_directed", False),
+            )
+            neighbors = dir_net.following
+
+        # --- Event injection setup. Enabled only when --event_step > 0
+        #     and --event_text is non-empty; otherwise event_enabled stays False
+        #     and not one line of the event path runs. ---
+        _event_step = int(getattr(args, "event_step", -1))
+        _event_text = str(getattr(args, "event_text", "") or "").strip()
+        _event_persist = str(getattr(args, "event_persist", "reaction"))
+        event_enabled = _event_step > 0 and bool(_event_text)
+        event_fired = False
+        event_log_rows = []
+        event_template = None
+        if event_enabled:
+            _tmpl_root = getattr(list_agents[0], "prompt_template_root", None) if list_agents else None
+            event_template = event_injection.load_event_template(_tmpl_root)
+            print(f"[INFO] Event injection armed: step={_event_step}, persist={_event_persist}, "
+                  f"text={_event_text[:60]!r}")
+
         for t in range(num_steps):
             global CURRENT_INTERACTION_STEP
             CURRENT_INTERACTION_STEP = t + 1
+
+            # --- Fire the one-off event, once, at the chosen step, BEFORE
+            #     this step's interaction. Every agent reacts in-character via the
+            #     normal LLM entry point (save_turn=False so it is not logged as a
+            #     step-2/3 turn); the reaction is stored as an 'event' memory record,
+            #     pinned when the persist mode keeps the headline. ---
+            if event_enabled and not event_fired and (t + 1) == _event_step:
+                event_fired = True
+
+                def _event_react(_agent, _prompt):
+                    return get_llm_response(_agent.memory, _prompt, use_history=True, save_turn=False)
+
+                def _event_store(_agent, _text, _pinned):
+                    _agent._append_memory_event(_text, current_interaction_type="event", pinned=bool(_pinned))
+
+                print(f"[INFO] EVENT at step {t + 1}: broadcasting to {len(list_agents)} agents.")
+                event_log_rows = event_injection.broadcast_event(
+                    list_agents, _event_text, t + 1,
+                    _event_react, _event_store,
+                    template=event_template, persist=_event_persist,
+                )
             dict_csv["time_step"].append(t + 1)
             row = []
             row.extend([
@@ -16467,6 +16591,24 @@ def main(
             agent_i.current_belief = int(new_belief)
             agent_i_post_belief = agent_i.current_belief
             opinions_by_idx[listener_idx] = agent_i.current_belief
+
+            # --- Coevolving network step. Runs only when --network_evolves
+            #     is set. Placed AFTER the belief update so rewiring sees the current
+            #     opinion, not the pre-interaction one: an add joins agents who now
+            #     agree, a cut drops a tie that has become discordant. Coupled so the
+            #     edge count is conserved. Default scorer is opinion-only. ---
+            if dir_net is not None:
+                evolve_once(
+                    dir_net, listener_idx, speaker_idx, opinions_by_idx, attributes,
+                    step=t,
+                    burnin_steps=int(getattr(args, "evolve_burnin", 50)),
+                    add_score_threshold=float(getattr(args, "evolve_add_threshold", 100.0)),
+                    cut_score_threshold=float(getattr(args, "evolve_cut_threshold", 25.0)),
+                    soft_cut_distance=int(getattr(args, "evolve_soft_cut_distance", 2)),
+                    p_add=float(getattr(args, "evolve_p_add", 0.07)),
+                    min_out_degree=int(getattr(args, "evolve_min_out_degree", 2)),
+                    rng=rng,
+                )
             delta_belief_i = int(agent_i_post_belief) - int(agent_i_pre_belief)
             if int(agent_i_post_belief) != int(agent_i_pre_belief):
                 print(
@@ -16728,16 +16870,29 @@ def main(
             
             # ---- EXPORT NETWORK EDGES EVERY 5 STEPS ----
             if t % 5 == 0:
-                edge_rows_step = []
-                for i, neighs in neighbors.items():
-                    for j in neighs:
-                        if i < j:
-                            edge_rows_step.append((i, j, list_agents[i].agent_name, list_agents[j].agent_name))
+                if dir_net is not None:
+                    # Directed export: one row per directed edge, plus a mutual flag.
+                    # Never dedupe with i<j here - under direction that drops every
+                    # high-to-low edge.
+                    edge_rows_step = [
+                        (s, d, list_agents[s].agent_name, list_agents[d].agent_name, int(mutual))
+                        for s, d, mutual in dir_net.edges()
+                    ]
+                    df_edges_step = pd.DataFrame(
+                        edge_rows_step,
+                        columns=["src_idx", "dst_idx", "src_name", "dst_name", "mutual"],
+                    )
+                else:
+                    edge_rows_step = []
+                    for i, neighs in neighbors.items():
+                        for j in neighs:
+                            if i < j:
+                                edge_rows_step.append((i, j, list_agents[i].agent_name, list_agents[j].agent_name))
 
-                df_edges_step = pd.DataFrame(
-                    edge_rows_step,
-                    columns=["i_idx", "j_idx", "i_name", "j_name"]
-                )
+                    df_edges_step = pd.DataFrame(
+                        edge_rows_step,
+                        columns=["i_idx", "j_idx", "i_name", "j_name"]
+                    )
 
                 step_edge_path = (
                     os.path.join(csv_folder, os.path.basename(csv_folder) + f"_step_{t:03d}_edges.csv")
@@ -16774,14 +16929,47 @@ def main(
                 mild_unanimity_value = None
                 mild_unanimity_remaining = None
 
+        # --- Event injection: dump the per-agent reactions. relevance is
+        #     left blank here and computed offline from event_text vs the claim, so
+        #     the hot loop stays free of embedding calls. ---
+        if event_log_rows:
+            try:
+                _ev_path = os.path.join(csv_folder, os.path.basename(csv_folder) + "_event_log.csv")
+                pd.DataFrame(event_log_rows, columns=event_injection.EVENT_LOG_COLUMNS).to_csv(_ev_path, index=False)
+                print(f"[INFO] Event log -> {_ev_path}")
+            except Exception as _e:
+                print(f"[warn] could not write event log: {_e}")
+
+        # --- Coevolving network: dump the edge-change log. One row per
+        #     directed add/cut with step, endpoints and reason, so the per-step
+        #     edge snapshots can be explained, not just observed. ---
+        if dir_net is not None and dir_net.changes:
+            try:
+                _chg_path = os.path.join(csv_folder, os.path.basename(csv_folder) + "_edge_changes.csv")
+                pd.DataFrame(
+                    dir_net.changes,
+                    columns=["step", "src_idx", "dst_idx", "action", "reason"],
+                ).to_csv(_chg_path, index=False)
+                print(f"[INFO] Edge-change log -> {_chg_path}")
+            except Exception as _e:
+                print(f"[warn] could not write edge-change log: {_e}")
+
         if early_stop_triggered and early_stop_step is not None and int(early_stop_step) < int(num_steps):
             current_beliefs_fill = [int(a.current_belief) for a in list_agents]
             B_fill, D_fill, P_fill = _compute_bdp_from_beliefs(current_beliefs_fill)
-            final_edge_rows = []
-            for i, neighs in neighbors.items():
-                for j in neighs:
-                    if i < j:
-                        final_edge_rows.append((i, j, list_agents[i].agent_name, list_agents[j].agent_name))
+            if dir_net is not None:
+                final_edge_rows = [
+                    (s, d, list_agents[s].agent_name, list_agents[d].agent_name, int(mutual))
+                    for s, d, mutual in dir_net.edges()
+                ]
+                final_edge_cols = ["src_idx", "dst_idx", "src_name", "dst_name", "mutual"]
+            else:
+                final_edge_rows = []
+                for i, neighs in neighbors.items():
+                    for j in neighs:
+                        if i < j:
+                            final_edge_rows.append((i, j, list_agents[i].agent_name, list_agents[j].agent_name))
+                final_edge_cols = ["i_idx", "j_idx", "i_name", "j_name"]
             try:
                 print(f"[INFO] Early stop at step {int(early_stop_step)} ({early_stop_reason}); padding synthetic plateau rows through step {int(num_steps)}.")
             except Exception:
@@ -16898,7 +17086,7 @@ def main(
                 if (int(synthetic_step) - 1) % 5 == 0:
                     df_edges_step = pd.DataFrame(
                         final_edge_rows,
-                        columns=["i_idx", "j_idx", "i_name", "j_name"]
+                        columns=final_edge_cols
                     )
                     step_edge_path = (
                         os.path.join(csv_folder, os.path.basename(csv_folder) + f"_step_{int(synthetic_step)-1:03d}_edges.csv")

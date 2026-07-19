@@ -11,6 +11,14 @@ they use - that difference IS the experimental variable:
   dense    cosine over Ollama embeddings (nomic-embed-text by default),
            on-disk cache; reads text only. Needs a running Ollama once
            per new corpus/query set - afterwards fully offline via cache.
+  lexical+seeds
+           CONTROL. lexical, but the query is first expanded with the same seed
+           entities the graph derives from the alias map. Equalises the QUERY-side
+           information between lexical and graph.
+  lexical+tags
+           CONTROL. lexical over "snippet text + that snippet's own entity tags",
+           with the query expanded as above. Equalises the INDEX-side information:
+           this backend reads exactly the bytes the graph reads.
   graph    entity graph from the hand-written tags: seed entities are
            matched in the query via the alias map (longest-alias-first,
            span consumption), then BFS over snippet<->entity links up to
@@ -18,9 +26,16 @@ they use - that difference IS the experimental variable:
            (a chain), then fills with BFS order. Reads text + entity tags.
            Never reads chain_id / groundtruth (evaluation-only files).
 
-Trust boundaries: retrievers may read snippet text and entity tags (graph also
-reads the alias map); the groundtruth sidecar (chains, implied conclusions) is
-evaluation-only and is never read by any retriever or rendered into any prompt.
+The two controls exist to answer the obvious objection to any graph-vs-lexical
+comparison: that the graph wins because it was given the entity tags, not because
+traversal is a better access structure. If a control closes the gap, the result is
+an information artefact; if it does not, the gap is attributable to structure.
+If a control closes the gap the advantage was information; if not, it was structure.
+
+Trust boundaries: retrievers may read snippet text and entity tags (graph and both
+controls also read the alias map); the groundtruth sidecar (chains, implied
+conclusions) is evaluation-only and is never read by any retriever or rendered into
+any prompt.
 """
 from __future__ import annotations
 import json, os, re, sys
@@ -186,3 +201,36 @@ def graph_rank(query, snips, alias_map, k=4, max_hops=3, hub_max=6, debug=None):
         debug.update({"seeds": seeds, "path": path,
                       "visited": {sid: depth[sid] for sid in order}})
     return picked[:k]
+
+
+# ------------------------------------------------------------------ controls
+
+def _expand_query(query, alias_map):
+    """Query + the seed entity names the graph would derive from it.
+
+    Same alias matching the graph uses, so the two see identical seeds.
+    """
+    seeds = seed_entities(query, alias_map)
+    return (query + " " + " ".join(seeds)) if seeds else query
+
+
+def tag_snippets(snips):
+    """Snippets whose text has that snippet's own entity tags appended.
+
+    This is what makes lexical+tags an index-side control: after this, a purely
+    lexical ranker reads exactly the bytes the graph reads. Non-destructive - the
+    caller's snippet dicts are left alone.
+    """
+    return [dict(s, text=s["text"] + " " + " ".join(s.get("entities") or []))
+            for s in snips]
+
+
+def lexical_seeds_rank(query, snips, alias_map, k=4):
+    """CONTROL: query-side equalisation. lexical over the entity-expanded query."""
+    return lexical_rank(_expand_query(query, alias_map), snips, k)
+
+
+def lexical_tags_rank(query, snips, alias_map, k=4):
+    """CONTROL: index-side equalisation. lexical over entity-expanded query AND
+    tag-augmented snippet text - identical information to the graph, no traversal."""
+    return lexical_rank(_expand_query(query, alias_map), tag_snippets(snips), k)

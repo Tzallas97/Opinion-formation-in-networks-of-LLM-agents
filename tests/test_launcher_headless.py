@@ -17,7 +17,23 @@ import os, sys, types
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "tkstub"))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "scripts"))
-sys.modules.setdefault("matplotlib", types.ModuleType("matplotlib"))
+# Prefer the real matplotlib when it is installed: compare_runs calls
+# matplotlib.use("Agg"), which an empty stub module cannot satisfy. Only fall
+# back to a stub (with the handful of attributes the GUIs touch) when the real
+# package is missing, so the suite still runs on a bare machine.
+try:
+    import matplotlib  # noqa: F401
+    matplotlib.use("Agg")
+except ImportError:
+    _mpl = types.ModuleType("matplotlib")
+    _mpl.use = lambda *_a, **_k: None
+    _mpl.rcParams = {}
+    _pyplot = types.ModuleType("matplotlib.pyplot")
+    for _name in ("figure", "subplots", "plot", "close", "savefig", "tight_layout"):
+        setattr(_pyplot, _name, lambda *_a, **_k: None)
+    _mpl.pyplot = _pyplot
+    sys.modules.setdefault("matplotlib", _mpl)
+    sys.modules.setdefault("matplotlib.pyplot", _pyplot)
 
 
 def test_main_launcher():

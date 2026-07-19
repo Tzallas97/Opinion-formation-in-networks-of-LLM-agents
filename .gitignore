@@ -10,6 +10,7 @@
 
 # 2) allow these top-level entries
 !.gitignore
+!.gitattributes
 !README.md
 !requirements.txt
 !list_agent_descriptions.csv
@@ -38,6 +39,9 @@ docs/*
 !docs/eval_judge_guide.md
 !docs/ui_launcher_guide.md
 !docs/main_plot_guide.md
+# docs/adr/ stays LOCAL: ADR-001 carries preliminary empirical results
+# (condition-ordering comparison, n=9) alongside the code decision. Flip this
+# to '!docs/adr/' if the ADRs should ship with the code.
 !docs/multihop_corpus_spec.md
 
 # --- assets: only the README image ---------------------------------
@@ -64,6 +68,8 @@ scripts/*
 !scripts/main_plot_network.py
 !scripts/network_models.py
 !scripts/opinion_dynamics_test_network_qwen.py
+!scripts/opinion_metrics.py
+!scripts/event_injection.py
 !scripts/plot_launcher.py
 !scripts/persona_profiles_support.py
 !scripts/run_naming.py

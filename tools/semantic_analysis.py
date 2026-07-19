@@ -33,6 +33,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# scripts/ holds the shared metric + naming modules used across the repo
+_SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+import run_naming      # shared stem/sibling resolution + tolerant CSV open
 import eval_runs  # spec discovery + run loading
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
@@ -102,14 +108,17 @@ def tweets_from_run(spec):
         b = os.path.basename(spec); cut = b.lower().find("opinion_change")
         prefix = b[:cut].rstrip("_-") if cut > 0 else None
     ic = None
-    for pat in ("*network_interactions*.csv", "*interactions*.csv"):
-        hit = eval_runs._one(run_dir, (prefix + "*" + pat.lstrip("*")) if prefix else pat)
+    pats = (run_naming.sibling_patterns(os.path.basename(spec),
+                                        "*network_interactions*.csv", "*interactions*.csv")
+            if prefix else ("*network_interactions*.csv", "*interactions*.csv"))
+    for pat in pats:
+        hit = eval_runs._one(run_dir, pat)
         if hit: ic = hit; break
     items = []
     if not ic: return run, items
     seen = set()
     clean = lambda t: re.sub(r"\s+", " ", re.sub(r"^FINAL_RATING:\s*-?\d+\s*(?:\n|\\n|\s)*(?:TWEET:|EXPLANATION:)\s*", "", str(t or ""), flags=re.I)).strip()
-    for row in csv.DictReader(open(ic, encoding="utf-8")):
+    for row in csv.DictReader(run_naming.open_text(ic)):
         step = str(row.get("Time Step") or "").strip()
         author = (row.get("Agent_J Name") or "").strip()
         text = clean(row.get("Agent_J Tweet"))
