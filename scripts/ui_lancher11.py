@@ -585,6 +585,8 @@ DEFAULT_SETTINGS = {
     "persona_evidence_style": "mixed",
     "persona_official_narrative_suspicion": "medium",
     "persona_openness_to_update": "medium",
+    "persona_locus_of_control": "mixed",
+    "persona_contrarianism": "medium",
     "persona_value_orientation": "balanced",
     "persona_agency_vs_fatalism": "balanced",
     "persona_conflict_style": "balanced",
@@ -4154,6 +4156,8 @@ class LauncherUI(tk.Tk):
             "persona_evidence_style": getattr(self, "persona_evidence_style_var", tk.StringVar(value="mixed")).get().strip(),
             "persona_official_narrative_suspicion": getattr(self, "persona_official_narrative_suspicion_var", tk.StringVar(value="medium")).get().strip(),
             "persona_openness_to_update": getattr(self, "persona_openness_to_update_var", tk.StringVar(value="medium")).get().strip(),
+            "persona_locus_of_control": getattr(self, "persona_locus_of_control_var", tk.StringVar(value="mixed")).get().strip(),
+            "persona_contrarianism": getattr(self, "persona_contrarianism_var", tk.StringVar(value="medium")).get().strip(),
             "persona_value_orientation": getattr(self, "persona_value_orientation_var", tk.StringVar(value="balanced")).get().strip(),
             "persona_agency_vs_fatalism": getattr(self, "persona_agency_vs_fatalism_var", tk.StringVar(value="balanced")).get().strip(),
             "persona_conflict_style": getattr(self, "persona_conflict_style_var", tk.StringVar(value="balanced")).get().strip(),
@@ -4481,6 +4485,8 @@ class LauncherUI(tk.Tk):
             'evidence_style': self.persona_evidence_style_var,
             'official_narrative_suspicion': self.persona_official_narrative_suspicion_var,
             'openness_to_update': self.persona_openness_to_update_var,
+            'locus_of_control': self.persona_locus_of_control_var,
+            'contrarianism': self.persona_contrarianism_var,
             'value_orientation': self.persona_value_orientation_var,
             'agency_vs_fatalism': self.persona_agency_vs_fatalism_var,
             'conflict_style': self.persona_conflict_style_var,
@@ -4559,6 +4565,8 @@ class LauncherUI(tk.Tk):
             'evidence_style': ('' if self.persona_evidence_style_var.get().strip() == 'off' else self.persona_evidence_style_var.get().strip()),
             'official_narrative_suspicion': ('' if self.persona_official_narrative_suspicion_var.get().strip() == 'off' else self.persona_official_narrative_suspicion_var.get().strip()),
             'openness_to_update': ('' if self.persona_openness_to_update_var.get().strip() == 'off' else self.persona_openness_to_update_var.get().strip()),
+            'locus_of_control': ('' if self.persona_locus_of_control_var.get().strip() == 'off' else self.persona_locus_of_control_var.get().strip()),
+            'contrarianism': ('' if self.persona_contrarianism_var.get().strip() == 'off' else self.persona_contrarianism_var.get().strip()),
             'value_orientation': ('' if self.persona_value_orientation_var.get().strip() == 'off' else self.persona_value_orientation_var.get().strip()),
             'agency_vs_fatalism': ('' if self.persona_agency_vs_fatalism_var.get().strip() == 'off' else self.persona_agency_vs_fatalism_var.get().strip()),
             'conflict_style': ('' if self.persona_conflict_style_var.get().strip() == 'off' else self.persona_conflict_style_var.get().strip()),
@@ -4696,6 +4704,10 @@ class LauncherUI(tk.Tk):
         self.persona_evidence_style_var = tk.StringVar(value=self._settings.get('persona_evidence_style', 'mixed'))
         self.persona_official_narrative_suspicion_var = tk.StringVar(value=self._settings.get('persona_official_narrative_suspicion', 'medium'))
         self.persona_openness_to_update_var = tk.StringVar(value=self._settings.get('persona_openness_to_update', 'medium'))
+        # ADR-006 Component 1: locus_of_control (Rotter 1966) and contrarianism (Flache 2017)
+        # as core_causal traits. Defaults are neutral -> byte-identical baseline.
+        self.persona_locus_of_control_var = tk.StringVar(value=self._settings.get('persona_locus_of_control', 'mixed'))
+        self.persona_contrarianism_var = tk.StringVar(value=self._settings.get('persona_contrarianism', 'medium'))
         self.persona_value_orientation_var = tk.StringVar(value=self._settings.get('persona_value_orientation', 'balanced'))
         self.persona_agency_vs_fatalism_var = tk.StringVar(value=self._settings.get('persona_agency_vs_fatalism', 'balanced'))
         self.persona_conflict_style_var = tk.StringVar(value=self._settings.get('persona_conflict_style', 'balanced'))
@@ -4781,6 +4793,18 @@ class LauncherUI(tk.Tk):
         self.persona_openness_to_update_combo = ttk.Combobox(core, textvariable=self.persona_openness_to_update_var, values=self._values_with_off(DEFAULT_SCHEMA['allowed_values']['openness_to_update']), width=14, state='readonly')
         self.persona_openness_to_update_combo.grid(row=7, column=1, sticky='w', padx=6)
         ttk.Label(core, text='How easily a strong tweet can move the agent.', style='Muted.TLabel').grid(row=7, column=2, columnspan=2, sticky='w')
+
+        # ADR-006 Component 1: locus of control (Rotter 1966).
+        ttk.Label(core, text='Locus of control:').grid(row=8, column=0, sticky='w', pady=4)
+        self.persona_locus_of_control_combo = ttk.Combobox(core, textvariable=self.persona_locus_of_control_var, values=self._values_with_off(DEFAULT_SCHEMA['allowed_values']['locus_of_control']), width=14, state='readonly')
+        self.persona_locus_of_control_combo.grid(row=8, column=1, sticky='w', padx=6)
+        ttk.Label(core, text='Πώς αλλάζει γνώμη ο agent: internal = από επιχειρήματα/στοιχεία, external = από την πλειοψηφία γύρω του, mixed = ενδιάμεσο (default). Rotter 1966.', style='Muted.TLabel').grid(row=8, column=2, columnspan=2, sticky='w')
+
+        # ADR-006 Component 1: contrarianism (Flache 2017, repulsive influence).
+        ttk.Label(core, text='Contrarianism:').grid(row=9, column=0, sticky='w', pady=4)
+        self.persona_contrarianism_combo = ttk.Combobox(core, textvariable=self.persona_contrarianism_var, values=self._values_with_off(DEFAULT_SCHEMA['allowed_values']['contrarianism']), width=14, state='readonly')
+        self.persona_contrarianism_combo.grid(row=9, column=1, sticky='w', padx=6)
+        ttk.Label(core, text='Τάση να αποκλίνει από την πληθυσμιακή πλειοψηφία (very_high = συστηματικός αντιλογισμός, very_low = συμμορφωτικός, medium = ουδέτερο default). Flache 2017.', style='Muted.TLabel').grid(row=9, column=2, columnspan=2, sticky='w')
 
         # --- Expressive / debate-style layer (separate category) --------------------
         # These three are NOT causal belief-update drivers. They only relax the output
@@ -5032,6 +5056,8 @@ class LauncherUI(tk.Tk):
             self.persona_evidence_style_var,
             self.persona_official_narrative_suspicion_var,
             self.persona_openness_to_update_var,
+            self.persona_locus_of_control_var,
+            self.persona_contrarianism_var,
             self.persona_value_orientation_var,
             self.persona_agency_vs_fatalism_var,
             self.persona_conflict_style_var,
