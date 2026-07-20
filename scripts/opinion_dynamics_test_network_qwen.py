@@ -24,6 +24,7 @@ from prompts.opinion_dynamics.Flache_2017.content.fact_packs import FACT_PACKS
 from prompts.opinion_dynamics.Flache_2017.content.world_rules import WORLD_RULES as EXTERNAL_WORLD_RULES, WORLD_LABELS
 from network_models import build_small_world, build_erdos_renyi, build_barabasi_albert, choose_partner_scoring
 from network_models import DirectedNetwork, evolve_once  # coevolving network, opt-in via --network_evolves
+from network_models import assign_p_reach  # ADR-006 Component 3 (pluggable reach policy)
 from step2_io import render_step2_template  # ADR-006 Component 2 (silence-as-choice) template renderer
 import event_injection  # timed population-level shock, opt-in via --event_step
 import run_naming  # shared mode-abbreviation + run-stem naming
@@ -3656,6 +3657,50 @@ parser.add_argument(
          "records the event; with just the flag on, a <silent> response from "
          "the model would currently fall through to the existing parse-fail "
          "path.",
+)
+
+# --- ADR-006 Component 3: p_reach pluggable policy pattern (feeds P21, P30) ---
+parser.add_argument(
+    "--p_reach_policy",
+    default="uniform",
+    choices=["uniform", "homophilic", "shadowban"],
+    type=str,
+    help="ADR-006 Component 3. Policy for assigning reach probability to "
+         "directed edges (src -> dst): whether the tweet from src actually "
+         "reaches dst. uniform (default 1.0) = byte-identical baseline. "
+         "homophilic = sigmoid(k * (1 - 2 * normalized_distance)); mimics "
+         "engagement-based amplification (P30 Cinelli). shadowban = a random "
+         "subset of agents get low outgoing reach; mimics content moderation "
+         "(P21).",
+)
+parser.add_argument(
+    "--p_reach_uniform_value",
+    default=1.0,
+    type=float,
+    help="ADR-006 Component 3, uniform policy. Every edge gets this p_reach. "
+         "Default 1.0 preserves byte-identical baseline; dose-response sweep "
+         "{1.0, 0.75, 0.5, 0.25, 0.1} isolates the effect of reach dilution.",
+)
+parser.add_argument(
+    "--p_reach_homophily_k",
+    default=2.0,
+    type=float,
+    help="ADR-006 Component 3, homophilic policy. Sigmoid sharpness. Higher "
+         "k -> steeper similar/dissimilar contrast. Default 2.0.",
+)
+parser.add_argument(
+    "--p_reach_shadowban_fraction",
+    default=0.1,
+    type=float,
+    help="ADR-006 Component 3, shadowban policy. Fraction of agents to "
+         "penalise (their outgoing edges get shadowban_value). Default 0.1.",
+)
+parser.add_argument(
+    "--p_reach_shadowban_value",
+    default=0.1,
+    type=float,
+    help="ADR-006 Component 3, shadowban policy. Reach probability for the "
+         "penalised agents' outgoing edges. Default 0.1.",
 )
 
 parser.add_argument(
@@ -16236,18 +16281,47 @@ def main(
         early_stop_reason = ''
 
         # --- Coevolving network setup. dir_net stays None unless
-        #     --network_evolves is set, so the default path is untouched. When on,
-        #     neighbors is aliased to dir_net.following: rewiring the directed graph
-        #     is then visible to speaker selection for free, with no other change to
-        #     the loop. Fully-mixed runs (net_type == "none") do not evolve - there
-        #     is no edge set to rewire. ---
+        #     --network_evolves is set OR --p_reach_policy is non-default, so
+        #     the default path is untouched. When on, neighbors is aliased to
+        #     dir_net.following: rewiring the directed graph is then visible to
+        #     speaker selection for free, with no other change to the loop.
+        #     Fully-mixed runs (net_type == "none") do not use dir_net - there
+        #     is no edge set to attach reach probabilities to. ---
         dir_net = None
-        if getattr(args, "network_evolves", False) and net_type != "none":
+        _p_reach_policy = str(getattr(args, "p_reach_policy", "uniform") or "uniform")
+        _p_reach_uniform_value = float(getattr(args, "p_reach_uniform_value", 1.0))
+        # ADR-006 Component 3: activate p_reach only when the user asks for it.
+        # uniform + 1.0 is the byte-identical baseline; every edge draws 1.0
+        # via DirectedNetwork.get_p_reach(), so no dir_net is needed.
+        _p_reach_active = (_p_reach_policy != "uniform" or _p_reach_uniform_value != 1.0)
+        if (getattr(args, "network_evolves", False) or _p_reach_active) and net_type != "none":
             dir_net = DirectedNetwork.from_undirected(
                 neighbors, num_agents,
                 reciprocal=not getattr(args, "evolve_directed", False),
             )
             neighbors = dir_net.following
+            # Populate p_reach for every existing edge under the chosen policy.
+            # Only runs when the user explicitly asks for a non-default policy;
+            # rewires (evolve_once) do NOT re-populate here - the sim leaves the
+            # rewire+policy interaction to a later ADR when we have data.
+            if _p_reach_active:
+                _p_reach_params = {
+                    "uniform_value": _p_reach_uniform_value,
+                    "homophily_k": float(getattr(args, "p_reach_homophily_k", 2.0)),
+                    "shadowban_value": float(getattr(args, "p_reach_shadowban_value", 0.1)),
+                }
+                if _p_reach_policy == "shadowban":
+                    _sb_fraction = float(getattr(args, "p_reach_shadowban_fraction", 0.1))
+                    _n_banned = max(1, int(round(_sb_fraction * num_agents)))
+                    _p_reach_params["shadowban_agents"] = set(
+                        rng.sample(range(num_agents), min(_n_banned, num_agents))
+                    )
+                for _src in list(dir_net.following.keys()):
+                    for _dst in dir_net.following[_src]:
+                        dir_net.p_reach[(_src, _dst)] = assign_p_reach(
+                            _p_reach_policy, _p_reach_params,
+                            _src, _dst, opinions_by_idx,
+                        )
 
         # --- Event injection setup. Enabled only when --event_step > 0
         #     and --event_text is non-empty; otherwise event_enabled stays False
@@ -16314,6 +16388,23 @@ def main(
             else:
                 neigh_set = neighbors.get(listener_idx, set())
                 candidate_speakers = list(neigh_set) if neigh_set else [idx for idx in range(num_agents) if idx != listener_idx]
+                # ADR-006 Component 3: Bernoulli guard on candidate speakers.
+                # Only fires when dir_net exists AND a non-default p_reach policy
+                # is active - guaranteeing byte-identical baseline otherwise (a
+                # uniform=1.0 draw always succeeds anyway, but we skip the loop
+                # to keep the RNG stream identical to pre-Component-3 runs).
+                if dir_net is not None and _p_reach_active and neigh_set:
+                    _filtered = [
+                        _s for _s in candidate_speakers
+                        if rng.random() < dir_net.get_p_reach(_s, listener_idx)
+                    ]
+                    if _filtered:
+                        candidate_speakers = _filtered
+                    # If everyone was filtered out, fall through to the current
+                    # candidate list - matches the existing "listener has no
+                    # neighbors" fallback semantics rather than silently
+                    # dropping the interaction. A counter for these events is
+                    # deferred to Task 2.3b-style dispatch work.
 
             sel_mode = str(getattr(args, "interaction_selection", "homophily")).strip().lower()
             hom_mode = str(getattr(args, "interaction_homophily_mode", "full")).strip().lower()
