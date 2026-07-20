@@ -26,6 +26,8 @@ Direction and strength
 - At -1: mildly AGAINST the claim. Lean toward doubting it, but sound tentative and allow that it may be true.
 - At -2: strongly AGAINST the claim. Lead with a confident reason to doubt; little or no hedging.
 
+<!--ALLOW_SILENCE_BLOCK-->
+
 Format
 - FINAL_RATING must equal {CURRENT_BELIEF}.
 - No links. 0-2 hashtags max.
