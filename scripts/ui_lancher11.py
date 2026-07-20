@@ -525,6 +525,12 @@ DEFAULT_SETTINGS = {
     "solo_check": "off",
     "same_side_edge_unlock_hits": "2",
     "same_rating_step3_mode": "skip_tweet_local",
+    # ADR-006 Component 3: p_reach pluggable policy pattern (feeds P21, P30).
+    "p_reach_policy": "uniform",
+    "p_reach_uniform_value": "1.0",
+    "p_reach_homophily_k": "2.0",
+    "p_reach_shadowban_fraction": "0.1",
+    "p_reach_shadowban_value": "0.1",
 
     # Optional per-step LLM overrides (blank = inherit global)
     "temperature_step2": "",
@@ -1888,6 +1894,32 @@ class LauncherUI(tk.Tk):
         ttk.Combobox(cfg_global, textvariable=self.allow_silence_var, values=["off", "on"], width=8, state="readonly").grid(row=7, column=1, sticky="w", padx=6)
         ttk.Label(cfg_global, text="on = ο agent μπορεί να επιστρέψει `<silent>` και να μη γράψει tweet (mechanism-agnostic silence option, feeds P12). off (default) = byte-identical με προ-ADR-006, το step2 template renderάρεται χωρίς silence block. Πλήρη Noels 4-way parser dispatch + rich silence log θα προστεθούν σε Task 2.3b.",
                   style="Muted.TLabel", wraplength=620, justify="left").grid(row=7, column=2, columnspan=3, sticky="w")
+        # ADR-006 Component 3: p_reach pluggable policy pattern (feeds P21, P30).
+        ttk.Label(cfg_global, text="Reach policy (p_reach):").grid(row=8, column=0, sticky="w", pady=6)
+        self.p_reach_policy_var = tk.StringVar(value=self._settings.get("p_reach_policy", "uniform"))
+        ttk.Combobox(cfg_global, textvariable=self.p_reach_policy_var, values=["uniform", "homophilic", "shadowban"], width=12, state="readonly").grid(row=8, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_global, text="uniform (default) = κάθε ακμή παίρνει το ίδιο p_reach, 1.0 -> byte-identical baseline. homophilic = sigmoid(k*(1-2*norm_dist)): όμοιες γνώμες βλέπονται περισσότερο (engagement amplification, feeds P30 Cinelli). shadowban = τυχαίο υποσύνολο agents παίρνει χαμηλό outgoing reach (content moderation, feeds P21). Οι τρεις sub-παράμετροι πιο κάτω ισχύουν η καθεμία ΜΟΝΟ για την policy της.",
+                  style="Muted.TLabel", wraplength=620, justify="left").grid(row=8, column=2, columnspan=3, sticky="w")
+        ttk.Label(cfg_global, text="p_reach uniform value:").grid(row=9, column=0, sticky="w", pady=6)
+        self.p_reach_uniform_value_var = tk.StringVar(value=self._settings.get("p_reach_uniform_value", "1.0"))
+        ttk.Entry(cfg_global, textvariable=self.p_reach_uniform_value_var, width=8).grid(row=9, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_global, text="Μόνο για policy=uniform. p_reach κάθε ακμής στο [0,1]. 1.0 (default) = baseline. Dose-response sweep {1.0, 0.75, 0.5, 0.25, 0.1} απομονώνει την επίδραση της αραίωσης εμβέλειας. Κενό = ο sim βάζει το default.",
+                  style="Muted.TLabel", wraplength=620, justify="left").grid(row=9, column=2, columnspan=3, sticky="w")
+        ttk.Label(cfg_global, text="p_reach homophily k:").grid(row=10, column=0, sticky="w", pady=6)
+        self.p_reach_homophily_k_var = tk.StringVar(value=self._settings.get("p_reach_homophily_k", "2.0"))
+        ttk.Entry(cfg_global, textvariable=self.p_reach_homophily_k_var, width=8).grid(row=10, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_global, text="Μόνο για policy=homophilic. Sigmoid sharpness: μεγαλύτερο k -> πιο απότομη αντίθεση similar/dissimilar. Default 2.0. Κενό = default.",
+                  style="Muted.TLabel", wraplength=620, justify="left").grid(row=10, column=2, columnspan=3, sticky="w")
+        ttk.Label(cfg_global, text="p_reach shadowban fraction:").grid(row=11, column=0, sticky="w", pady=6)
+        self.p_reach_shadowban_fraction_var = tk.StringVar(value=self._settings.get("p_reach_shadowban_fraction", "0.1"))
+        ttk.Entry(cfg_global, textvariable=self.p_reach_shadowban_fraction_var, width=8).grid(row=11, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_global, text="Μόνο για policy=shadowban. Ποσοστό agents που τιμωρούνται (οι εξερχόμενες ακμές τους παίρνουν το shadowban value). Στο [0,1], default 0.1. Κενό = default.",
+                  style="Muted.TLabel", wraplength=620, justify="left").grid(row=11, column=2, columnspan=3, sticky="w")
+        ttk.Label(cfg_global, text="p_reach shadowban value:").grid(row=12, column=0, sticky="w", pady=6)
+        self.p_reach_shadowban_value_var = tk.StringVar(value=self._settings.get("p_reach_shadowban_value", "0.1"))
+        ttk.Entry(cfg_global, textvariable=self.p_reach_shadowban_value_var, width=8).grid(row=12, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_global, text="Μόνο για policy=shadowban. p_reach των εξερχόμενων ακμών των τιμωρημένων agents. Στο [0,1], default 0.1 (οι υπόλοιποι κρατούν 1.0). Κενό = default.",
+                  style="Muted.TLabel", wraplength=620, justify="left").grid(row=12, column=2, columnspan=3, sticky="w")
         ttk.Label(cfg_global, text="Wrong-side explanation re-query:").grid(row=4, column=0, sticky="w", pady=6)
         self.wrong_side_requery_var = tk.StringVar(value=self._settings.get("wrong_side_explanation_requery", "off"))
         ttk.Combobox(cfg_global, textvariable=self.wrong_side_requery_var, values=["off", "on"], width=8, state="readonly").grid(row=4, column=1, sticky="w", padx=6)
@@ -1932,7 +1964,7 @@ class LauncherUI(tk.Tk):
                   style="Muted.TLabel", wraplength=620, justify="left").grid(row=3, column=2, columnspan=4, sticky="w")
 
         ttk.Label(cfg_global, text="Model: global Ollama tag used by BOTH steps unless a per-step override is set (editable so freshly pulled tags work - but beware typos).  Max step change: how far one interaction can move an opinion (1 = one notch; the prompt's ALLOWED_FINAL_RATING_SET is built from this).",
-                  style="Muted.TLabel", wraplength=1150, justify="left").grid(row=7, column=0, columnspan=6, sticky="w", pady=(8, 0))
+                  style="Muted.TLabel", wraplength=1150, justify="left").grid(row=13, column=0, columnspan=6, sticky="w", pady=(8, 0))
 
         # -----------------------------
         # LLM defaults (apply unless overridden per-step)
@@ -4058,6 +4090,12 @@ class LauncherUI(tk.Tk):
             "solo_check": (getattr(self, "solo_check_var", tk.StringVar(value="off")).get() or "off"),
             "same_side_edge_unlock_hits": "0" if self._normalize_allowed_update_mode_ui() == "free_bounded" else getattr(self, "same_side_edge_unlock_hits_var", tk.StringVar(value="2")).get().strip(),
             "same_rating_step3_mode": getattr(self, "same_rating_step3_mode_var", tk.StringVar(value="skip_tweet_local")).get().strip(),
+            # ADR-006 Component 3: p_reach pluggable policy pattern (feeds P21, P30).
+            "p_reach_policy": (getattr(self, "p_reach_policy_var", tk.StringVar(value="uniform")).get() or "uniform").strip(),
+            "p_reach_uniform_value": getattr(self, "p_reach_uniform_value_var", tk.StringVar(value="1.0")).get().strip(),
+            "p_reach_homophily_k": getattr(self, "p_reach_homophily_k_var", tk.StringVar(value="2.0")).get().strip(),
+            "p_reach_shadowban_fraction": getattr(self, "p_reach_shadowban_fraction_var", tk.StringVar(value="0.1")).get().strip(),
+            "p_reach_shadowban_value": getattr(self, "p_reach_shadowban_value_var", tk.StringVar(value="0.1")).get().strip(),
 
             # Global LLM defaults
             "temperature": self.temp_var.get().strip(),
@@ -5929,6 +5967,24 @@ class LauncherUI(tk.Tk):
         allow_silence = (getattr(self, "allow_silence_var", tk.StringVar(value="off")).get() or "off").strip()
         if _supports("--allow_silence"):
             cmd += ["--allow_silence", allow_silence]
+        # ADR-006 Component 3: p_reach policy + sub-parameters. policy is always
+        # passed (uniform is the byte-identical default); each float sub-parameter
+        # is passed only when non-blank, matching the min_p convention above.
+        p_reach_policy = (getattr(self, "p_reach_policy_var", tk.StringVar(value="uniform")).get() or "uniform").strip()
+        if _supports("--p_reach_policy"):
+            cmd += ["--p_reach_policy", p_reach_policy]
+        p_reach_uniform_value = getattr(self, "p_reach_uniform_value_var", tk.StringVar(value="")).get().strip()
+        if p_reach_uniform_value != "" and _supports("--p_reach_uniform_value"):
+            cmd += ["--p_reach_uniform_value", str(float(p_reach_uniform_value))]
+        p_reach_homophily_k = getattr(self, "p_reach_homophily_k_var", tk.StringVar(value="")).get().strip()
+        if p_reach_homophily_k != "" and _supports("--p_reach_homophily_k"):
+            cmd += ["--p_reach_homophily_k", str(float(p_reach_homophily_k))]
+        p_reach_shadowban_fraction = getattr(self, "p_reach_shadowban_fraction_var", tk.StringVar(value="")).get().strip()
+        if p_reach_shadowban_fraction != "" and _supports("--p_reach_shadowban_fraction"):
+            cmd += ["--p_reach_shadowban_fraction", str(float(p_reach_shadowban_fraction))]
+        p_reach_shadowban_value = getattr(self, "p_reach_shadowban_value_var", tk.StringVar(value="")).get().strip()
+        if p_reach_shadowban_value != "" and _supports("--p_reach_shadowban_value"):
+            cmd += ["--p_reach_shadowban_value", str(float(p_reach_shadowban_value))]
         wrong_side_requery = (getattr(self, "wrong_side_requery_var", tk.StringVar(value="off")).get() or "off").strip()
         if _supports("--wrong_side_explanation_requery"):
             cmd += ["--wrong_side_explanation_requery", wrong_side_requery]

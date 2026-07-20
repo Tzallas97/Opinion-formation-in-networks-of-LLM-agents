@@ -115,6 +115,25 @@
   πέντε αριθμοί με κόμμα, ένας ανά κάδο −2..+2, άθροισμα = Agents. Οι θέσεις ανακατεύονται με
   το Seed: ΠΟΙΟΣ παίρνει ποια τιμή εξαρτάται από το seed, τα πλήθη είναι ακριβή.
 
+## 8β. Reach policies (p_reach) — αλγοριθμική εμβέλεια (ADR-006 Component 3)
+
+Ξεχωρίζει την **εμβέλεια** (ποιος πραγματικά *βλέπει* ένα tweet) από τον **βαθμό** του δικτύου (ποιος ακολουθεί ποιον). Κάθε κατευθυνόμενη ακμή `src → dst` αποκτά ένα `p_reach ∈ [0,1]`: όταν ο `src` μιλήσει, ο `dst` εκτίθεται στο tweet μόνο με πιθανότητα `p_reach` (Bernoulli draw ανά listener event, seeded RNG → reproducible). Υπολογίζεται μία φορά στο edge creation μέσω μιας μόνο function `assign_p_reach(policy, params, src, dst, opinions)` (pluggable pattern: νέα policy = νέα function, όχι refactor). Ζει πάνω στις ADR-004 directed edges.
+
+- **Reach policy (p_reach):** ποια πολιτική αναθέτει το `p_reach`.
+  - `uniform` **(default)** — κάθε ακμή παίρνει το ίδιο *p_reach uniform value*. Με τιμή `1.0` είναι **byte-identical** με το προ-ADR-006 baseline. Ερώτημα: *έχει η αραίωση εμβέλειας μόνη της effect;* → dose-response sweep `{1.0, 0.75, 0.5, 0.25, 0.1}`. Feeds: baseline.
+  - `homophilic` — `p_reach = sigmoid(k · (1 − 2·norm_dist))`, όπου `norm_dist = |opinion[src] − opinion[dst]| / 4` (4 = μέγιστη απόσταση στην −2..+2 κλίμακα). Όμοιες γνώμες → υψηλό reach, αντίθετες → χαμηλό: μιμείται engagement-based amplification (echo chambers). Feeds: **P30** (Cinelli 2021, μοτίβο Twitter/FB).
+  - `shadowban` — τυχαίο υποσύνολο agents (κλάσμα = *shadowban fraction*) παίρνει χαμηλό `p_reach` (= *shadowban value*) σε ΟΛΕΣ τις εξερχόμενες ακμές του· οι υπόλοιποι κρατούν `1.0`. Μιμείται content moderation / περιορισμό διάχυσης. Feeds: **P21** (thesis §5.3 shadow-banning).
+- **p_reach uniform value** (default `1.0`): ΜΟΝΟ για `uniform`. Η τιμή εμβέλειας κάθε ακμής.
+- **p_reach homophily k** (default `2.0`): ΜΟΝΟ για `homophilic`. Sigmoid sharpness — μεγαλύτερο `k` = πιο απότομη αντίθεση similar/dissimilar.
+- **p_reach shadowban fraction** (default `0.1`): ΜΟΝΟ για `shadowban`. Ποσοστό agents που τιμωρούνται.
+- **p_reach shadowban value** (default `0.1`): ΜΟΝΟ για `shadowban`. Το `p_reach` των εξερχόμενων ακμών των τιμωρημένων.
+
+**Ειδικές περιπτώσεις:**
+- Κάθε sub-παράμετρος αγνοείται από τις policies που δεν την αφορούν (π.χ. `homophily k` δεν κάνει τίποτα σε `uniform`). Άφησέ τες στα defaults εκτός αν τρέχεις την αντίστοιχη policy. Κενό float στο GUI = ο sim βάζει το δικό του default.
+- **Byte-identical εγγύηση:** με `uniform` + `1.0` το φιλτράρισμα εμβέλειας παρακάμπτεται εντελώς (καμία επιπλέον κατανάλωση RNG) → η τροχιά απόψεων είναι ταυτόσημη με προ-ADR-006. Οι υπόλοιπες policies μπαίνουν στη διαδρομή μόνο αν επιλεγούν ρητά.
+- **Rewires:** όταν το δίκτυο εξελίσσεται (ADR-004), οι rewires ΔΕΝ επαναϋπολογίζουν `p_reach` προς το παρόν — η αλληλεπίδραση rewire×policy αφήνεται για επόμενο ADR.
+- Η επιλεγμένη policy + οι παράμετροι καταγράφονται στο `run_metrics.json` (config self-doc, Task 3.3), και το `p_reach` κάθε ακμής εξάγεται στο edge CSV (Task 3.3).
+
 ## 9. Multiple runs & έξοδοι
 
 - **Multiple runs:** off / same seed (γράφει _1,_2,…) / consecutive seeds (seed, seed+1, … και ενημερώνει το out όνομα). Καλύπτει replication ΜΙΑΣ διαμόρφωσης — για πλέγμα συνθηκών βλ. ROADMAP «batch/matrix mode».
