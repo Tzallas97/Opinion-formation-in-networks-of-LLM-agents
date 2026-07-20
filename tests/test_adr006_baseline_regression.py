@@ -16,7 +16,6 @@ gracefully if they are absent, so it never false-fails on a bare checkout.
 
 Run:  python tests/test_adr006_baseline_regression.py   (needs no LLM / no display)
 """
-import filecmp
 import glob
 import json
 import os
@@ -40,6 +39,14 @@ def _find_produced(basename):
     matches = glob.glob(os.path.join(ROOT, "results", "**", basename), recursive=True)
     matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return matches[0] if matches else None
+
+
+def _read_norm(path):
+    """Read bytes with line endings normalised to LF, so the comparison is about
+    the data, not the CRLF/LF artifact (git normalises the committed fixture to LF
+    while the Windows sim emits CRLF -- both collapse to the same content here)."""
+    with open(path, "rb") as fh:
+        return fh.read().replace(b"\r\n", b"\n")
 
 
 def test_default_flags_match_pre_adr006_baseline():
@@ -69,7 +76,7 @@ def test_default_flags_match_pre_adr006_baseline():
             produced = _find_produced(name)
             assert produced is not None, f"sim did not produce {name}"
             produced_dir = os.path.dirname(produced)
-            assert filecmp.cmp(os.path.join(FIX, name), produced, shallow=False), (
+            assert _read_norm(os.path.join(FIX, name)) == _read_norm(produced), (
                 f"REGRESSION: {name} differs from the committed pre-ADR-006 baseline "
                 f"-> a default-flags run is no longer byte-identical")
     finally:
