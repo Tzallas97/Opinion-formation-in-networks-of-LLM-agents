@@ -16938,6 +16938,17 @@ def main(
                 df_edges_step.to_csv(step_edge_path, index=False)
                 print(f"[Step {t}] Saved evolving network edges -> {step_edge_path}")
 
+            # Periodic checkpoint of the main analysis table. It is otherwise
+            # written only after the loop, so a kill mid-run (e.g. on a rented
+            # instance) would lose every derived row. _write_step_summary_csv
+            # rewrites the whole growing list, so this is idempotent; the final
+            # write still happens at the end.
+            if step_summary_out_name and (t % 5 == 0):
+                try:
+                    _write_step_summary_csv(step_summary_out_name, step_summary_rows)
+                except Exception as _e:
+                    print(f"[warn] periodic step_summary checkpoint failed: {_e}")
+
             unanimous_belief = _unanimous_belief(list_agents)
             if unanimous_belief is None:
                 mild_unanimity_value = None
