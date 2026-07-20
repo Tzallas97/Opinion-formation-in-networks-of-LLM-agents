@@ -73,6 +73,7 @@ scripts/*
 !scripts/plot_launcher.py
 !scripts/persona_profiles_support.py
 !scripts/run_naming.py
+!scripts/step2_io.py
 !scripts/topic_persona_fields.py
 !scripts/topic_persona_profiles.py
 !scripts/ui_lancher11.py
