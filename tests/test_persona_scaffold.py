@@ -13,11 +13,22 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "scripts"))
 
-from persona_profiles_support import DEFAULT_SCHEMA, DEFAULT_PROFILES  # noqa: E402
+from copy import deepcopy
+
+from persona_profiles_support import (  # noqa: E402
+    DEFAULT_SCHEMA,
+    DEFAULT_PROFILES,
+    render_persona_card,
+)
 
 
 EXPECTED_LOCUS_VALUES = ["internal", "mixed", "external"]
 EXPECTED_CONTRARIANISM_VALUES = ["very_low", "low", "medium", "high", "very_high"]
+
+
+def _fresh_profile():
+    """Return a copy of the first preset profile so tests can mutate freely."""
+    return deepcopy(DEFAULT_PROFILES["profiles"][0])
 
 
 def test_locus_of_control_in_default_schema_core_causal():
@@ -66,10 +77,86 @@ def test_all_preset_profiles_have_new_fields_with_allowed_values():
             f"profile[{i}] contrarianism={core['contrarianism']!r} not in {EXPECTED_CONTRARIANISM_VALUES}"
 
 
+def test_default_profile_render_has_no_locus_sentence():
+    """Baseline: with default 'mixed' value, the card must NOT gain a
+    locus-of-control sentence. This guarantees byte-identical rendering for
+    every persona that has not been customized."""
+    profile = _fresh_profile()  # locus_of_control='mixed' from Task 1.1 defaults
+    card, _ = render_persona_card(profile, agent_name="alice", opinion=0)
+    lower = card.lower()
+    assert "arguments and evidence" not in lower
+    assert "what others" not in lower
+
+
+def test_internal_locus_adds_argument_sentence():
+    profile = _fresh_profile()
+    profile["core_causal"]["locus_of_control"] = "internal"
+    card, _ = render_persona_card(profile, agent_name="alice", opinion=0)
+    assert "arguments and evidence" in card.lower(), \
+        f"expected 'arguments and evidence' sentence in card; got:\n{card}"
+
+
+def test_external_locus_adds_social_sentence():
+    profile = _fresh_profile()
+    profile["core_causal"]["locus_of_control"] = "external"
+    card, _ = render_persona_card(profile, agent_name="alice", opinion=0)
+    assert "what others" in card.lower(), \
+        f"expected 'what others' sentence in card; got:\n{card}"
+
+
+def test_default_profile_render_has_no_contrarianism_sentence():
+    profile = _fresh_profile()  # contrarianism='medium' from Task 1.1 defaults
+    card, _ = render_persona_card(profile, agent_name="alice", opinion=0)
+    lower = card.lower()
+    assert "differ from" not in lower and "differ with" not in lower
+    assert "agree with the perceived" not in lower
+
+
+def test_high_contrarianism_adds_differ_sentence():
+    profile = _fresh_profile()
+    profile["core_causal"]["contrarianism"] = "very_high"
+    card, _ = render_persona_card(profile, agent_name="alice", opinion=0)
+    assert "differ" in card.lower() and "majority" in card.lower(), \
+        f"expected differ+majority sentence; got:\n{card}"
+
+
+def test_low_contrarianism_adds_agree_sentence():
+    profile = _fresh_profile()
+    profile["core_causal"]["contrarianism"] = "very_low"
+    card, _ = render_persona_card(profile, agent_name="alice", opinion=0)
+    assert "agree" in card.lower() and "majority" in card.lower(), \
+        f"expected agree+majority sentence; got:\n{card}"
+
+
+def test_render_at_defaults_is_byte_identical_across_scaffold_change():
+    """Load-bearing: with every field at its default, the card text must match
+    what the same profile produced BEFORE ADR-006 (i.e. must contain none of
+    the new sentence stems). This guards against silent behavior change."""
+    profile = _fresh_profile()
+    card, _ = render_persona_card(profile, agent_name="alice", opinion=0)
+    # All 4 new sentence stems must be absent when both new fields are at default.
+    forbidden = [
+        "arguments and evidence",
+        "what others",
+        "differ from",
+        "agree with the perceived",
+    ]
+    for stem in forbidden:
+        assert stem not in card.lower(), \
+            f"scaffold added baseline sentence {stem!r} to default card:\n{card}"
+
+
 if __name__ == "__main__":
     test_locus_of_control_in_default_schema_core_causal()
     test_contrarianism_in_default_schema_core_causal()
     test_locus_of_control_allowed_values()
     test_contrarianism_allowed_values()
     test_all_preset_profiles_have_new_fields_with_allowed_values()
+    test_default_profile_render_has_no_locus_sentence()
+    test_internal_locus_adds_argument_sentence()
+    test_external_locus_adds_social_sentence()
+    test_default_profile_render_has_no_contrarianism_sentence()
+    test_high_contrarianism_adds_differ_sentence()
+    test_low_contrarianism_adds_agree_sentence()
+    test_render_at_defaults_is_byte_identical_across_scaffold_change()
     print("OK")

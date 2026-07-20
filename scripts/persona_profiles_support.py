@@ -1137,8 +1137,31 @@ def _core_reasoning_lines(core: dict[str, Any]) -> list[str]:
         else:
             lines.append("Can update moderately when the reason is clear.")
 
-    # Keep the card short.
-    return lines[:6]
+    # ADR-006 Component 1: locus of control (Rotter 1966).
+    # Only emit a sentence when the value is off the neutral default ("mixed"),
+    # so unchanged personas produce byte-identical cards to pre-ADR-006.
+    locus = _norm_trait_value(core.get("locus_of_control", ""))
+    if locus == "internal":
+        lines.append("Updates their view primarily in response to arguments and evidence.")
+    elif locus == "external":
+        lines.append("Updates their view primarily in response to what others around them are saying.")
+
+    # ADR-006 Component 1: contrarianism (Flache 2017, repulsive influence).
+    # Same principle: neutral "medium" default emits nothing.
+    contra = _norm_trait_value(core.get("contrarianism", ""))
+    if contra == "very_high":
+        lines.append("Has a strong tendency to differ from the perceived majority.")
+    elif contra == "high":
+        lines.append("Has a mild tendency to differ from the perceived majority.")
+    elif contra == "low":
+        lines.append("Has a mild tendency to agree with the perceived majority.")
+    elif contra == "very_low":
+        lines.append("Has a strong tendency to agree with the perceived majority.")
+
+    # Keep the card short. Bumped from 6 to 8 to accommodate the two ADR-006
+    # additions when both are set to a non-default value; the card is still
+    # capped so unlimited future additions cannot bloat the prompt.
+    return lines[:8]
 
 
 def render_persona_card(profile: dict[str, Any], agent_name: str, opinion: int) -> tuple[str, dict[str, Any]]:
