@@ -2032,7 +2032,7 @@ from langchain_core.prompts  import (
 )
 from langchain_core.messages import HumanMessage
 
-USE_FAKE_LLM = False
+USE_FAKE_LLM = (os.environ.get("FAKE_LLM", "").strip() == "1")  # ADR-006 Task 5.1: offline regression toggle (default off)
 
 def build_chat_ollama(model: str, temperature: float, **opts):
     """

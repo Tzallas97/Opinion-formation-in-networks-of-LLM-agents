@@ -1,0 +1,11 @@
+i_idx,j_idx,i_name,j_name
+0,1,Mark Thompson,Linda Evans
+0,2,Mark Thompson,James Wilson
+0,3,Mark Thompson,Abigail Brown
+0,4,Mark Thompson,Mia Robinson
+1,2,Linda Evans,James Wilson
+1,3,Linda Evans,Abigail Brown
+1,4,Linda Evans,Mia Robinson
+2,3,James Wilson,Abigail Brown
+2,4,James Wilson,Mia Robinson
+3,4,Abigail Brown,Mia Robinson
