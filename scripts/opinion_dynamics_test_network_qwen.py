@@ -78,6 +78,35 @@ def _metric_inc(key: str, n: int = 1):
         pass
 
 
+def _load_bian_scores_if_requested():
+    """ADR-006 Component 4: if --include_bian_scores on, run (or reuse a
+    cached) Bian 5-dim diagnostic for this run's model and return its scores
+    dict, else None. Cached per model under ~/.claude_bian_cache/<model>.json;
+    any failure is non-fatal (returns None with a printed note)."""
+    if str(getattr(args, "include_bian_scores", "off")).strip().lower() != "on":
+        return None
+    try:
+        import subprocess
+        model = str(getattr(args, "model_name", "") or "")
+        if not model:
+            return None
+        cache_dir = os.path.join(os.path.expanduser("~"), ".claude_bian_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", model)
+        cache_path = os.path.join(cache_dir, safe + ".json")
+        if not os.path.exists(cache_path):
+            tool = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "tools", "bian_diagnostic.py")
+            print(f"[bian] running 5-dim diagnostic for {model} (one-time, cached)...")
+            subprocess.run([sys.executable, tool, "--model", model, "--out", cache_path],
+                           check=True, timeout=1800)
+        with open(cache_path, encoding="utf-8") as _fh:
+            return json.load(_fh).get("scores")
+    except Exception as _e:
+        print(f"[bian] diagnostic skipped ({_e})")
+        return None
+
+
 def _dump_run_metrics_json():
     """Write run-level RUN_METRICS counters to <output_dir>/metrics_<run>.json.
 
@@ -139,6 +168,9 @@ def _dump_run_metrics_json():
                             "closed_world_leak_step3": int(RUN_METRICS.get("closed_world_leak_step3", 0)),
                             "closed_world_leak_fraction": round((int(RUN_METRICS.get("closed_world_leak_step2", 0)) + int(RUN_METRICS.get("closed_world_leak_step3", 0))) / (2 * _levents), 4) if _levents else 0.0},
                 "metrics": dict(sorted(RUN_METRICS.items()))}
+        _bian = globals().get("RUN_BIAN_SCORES")
+        if _bian:
+            data["bian_scores"] = _bian
         with open(path, "w", encoding="utf-8") as fh:
             _json.dump(data, fh, ensure_ascii=False, indent=2)
     except Exception:
@@ -3707,6 +3739,18 @@ parser.add_argument(
     type=float,
     help="ADR-006 Component 3, shadowban policy. Reach probability for the "
          "penalised agents' outgoing edges. Default 0.1.",
+)
+
+# --- ADR-006 Component 4: Bian 5-dim diagnostic opt-in (feeds P28) ---
+parser.add_argument(
+    "--include_bian_scores",
+    default="off",
+    choices=["off", "on"],
+    type=str,
+    help="ADR-006 Component 4. When on, run tools/bian_diagnostic.py for the "
+         "model of this run (cached per model under ~/.claude_bian_cache) and "
+         "copy the 5 validity scores into run_metrics.json. off (default) = "
+         "no-op, byte-identical baseline.",
 )
 
 parser.add_argument(
@@ -17822,6 +17866,8 @@ if __name__ == "__main__":
 
     experiment_id = "Flache_2017"
     model_name = args.model_name
+    # ADR-006 Component 4: opt-in Bian diagnostic (no-op unless --include_bian_scores on).
+    globals()["RUN_BIAN_SCORES"] = _load_bian_scores_if_requested()
     model_name_for_path = re.sub(r'[<>:"/\\|?*]', "_", model_name).strip().rstrip(".")
     temperature = args.temperature
     max_tokens = args.max_tokens

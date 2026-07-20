@@ -531,6 +531,8 @@ DEFAULT_SETTINGS = {
     "p_reach_homophily_k": "2.0",
     "p_reach_shadowban_fraction": "0.1",
     "p_reach_shadowban_value": "0.1",
+    # ADR-006 Component 4: Bian diagnostic opt-in.
+    "include_bian_scores": "off",
 
     # Optional per-step LLM overrides (blank = inherit global)
     "temperature_step2": "",
@@ -1920,6 +1922,12 @@ class LauncherUI(tk.Tk):
         ttk.Entry(cfg_global, textvariable=self.p_reach_shadowban_value_var, width=8).grid(row=12, column=1, sticky="w", padx=6)
         ttk.Label(cfg_global, text="Μόνο για policy=shadowban. p_reach των εξερχόμενων ακμών των τιμωρημένων agents. Στο [0,1], default 0.1 (οι υπόλοιποι κρατούν 1.0). Κενό = default.",
                   style="Muted.TLabel", wraplength=620, justify="left").grid(row=12, column=2, columnspan=3, sticky="w")
+        # ADR-006 Component 4: Bian 5-dim diagnostic opt-in (feeds P28).
+        ttk.Label(cfg_global, text="Include Bian bias scores:").grid(row=13, column=0, sticky="w", pady=6)
+        self.include_bian_scores_var = tk.StringVar(value=self._settings.get("include_bian_scores", "off"))
+        ttk.Combobox(cfg_global, textvariable=self.include_bian_scores_var, values=["off", "on"], width=8, state="readonly").grid(row=13, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_global, text="Πριν το run, τρέχει το tools/bian_diagnostic.py για το επιλεγμένο Ollama μοντέλο και ενσωματώνει τα 5 scores (social role KL, inter/intra agent similarity, keyword persistence, positivity) στο config self-doc του run. Cached ανά μοντέλο. off (default) = no-op. Bian 2025 (arXiv:2510.21180) validity protocol, feeds P28.",
+                  style="Muted.TLabel", wraplength=620, justify="left").grid(row=13, column=2, columnspan=3, sticky="w")
         ttk.Label(cfg_global, text="Wrong-side explanation re-query:").grid(row=4, column=0, sticky="w", pady=6)
         self.wrong_side_requery_var = tk.StringVar(value=self._settings.get("wrong_side_explanation_requery", "off"))
         ttk.Combobox(cfg_global, textvariable=self.wrong_side_requery_var, values=["off", "on"], width=8, state="readonly").grid(row=4, column=1, sticky="w", padx=6)
@@ -1964,7 +1972,7 @@ class LauncherUI(tk.Tk):
                   style="Muted.TLabel", wraplength=620, justify="left").grid(row=3, column=2, columnspan=4, sticky="w")
 
         ttk.Label(cfg_global, text="Model: global Ollama tag used by BOTH steps unless a per-step override is set (editable so freshly pulled tags work - but beware typos).  Max step change: how far one interaction can move an opinion (1 = one notch; the prompt's ALLOWED_FINAL_RATING_SET is built from this).",
-                  style="Muted.TLabel", wraplength=1150, justify="left").grid(row=13, column=0, columnspan=6, sticky="w", pady=(8, 0))
+                  style="Muted.TLabel", wraplength=1150, justify="left").grid(row=14, column=0, columnspan=6, sticky="w", pady=(8, 0))
 
         # -----------------------------
         # LLM defaults (apply unless overridden per-step)
@@ -4096,6 +4104,7 @@ class LauncherUI(tk.Tk):
             "p_reach_homophily_k": getattr(self, "p_reach_homophily_k_var", tk.StringVar(value="2.0")).get().strip(),
             "p_reach_shadowban_fraction": getattr(self, "p_reach_shadowban_fraction_var", tk.StringVar(value="0.1")).get().strip(),
             "p_reach_shadowban_value": getattr(self, "p_reach_shadowban_value_var", tk.StringVar(value="0.1")).get().strip(),
+            "include_bian_scores": (getattr(self, "include_bian_scores_var", tk.StringVar(value="off")).get() or "off"),
 
             # Global LLM defaults
             "temperature": self.temp_var.get().strip(),
@@ -5985,6 +5994,10 @@ class LauncherUI(tk.Tk):
         p_reach_shadowban_value = getattr(self, "p_reach_shadowban_value_var", tk.StringVar(value="")).get().strip()
         if p_reach_shadowban_value != "" and _supports("--p_reach_shadowban_value"):
             cmd += ["--p_reach_shadowban_value", str(float(p_reach_shadowban_value))]
+        # ADR-006 Component 4: pass --include_bian_scores through if the sim exposes it.
+        include_bian_scores = (getattr(self, "include_bian_scores_var", tk.StringVar(value="off")).get() or "off").strip()
+        if _supports("--include_bian_scores"):
+            cmd += ["--include_bian_scores", include_bian_scores]
         wrong_side_requery = (getattr(self, "wrong_side_requery_var", tk.StringVar(value="off")).get() or "off").strip()
         if _supports("--wrong_side_explanation_requery"):
             cmd += ["--wrong_side_explanation_requery", wrong_side_requery]
