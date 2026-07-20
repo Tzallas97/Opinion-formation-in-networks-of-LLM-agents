@@ -122,6 +122,44 @@ def test_reciprocal_baseline_still_reproduces_undirected_after_p_reach_added():
             f"following[{i}] diverged from undirected map"
 
 
+def test_directed_edge_export_includes_p_reach_column():
+    """Task 3.3 contract: the sim's DIRECTED edge export carries a ``p_reach``
+    column whose per-row value is exactly ``dir_net.get_p_reach(src, dst)``.
+
+    Mirrors the export construction in opinion_dynamics_test_network_qwen.py
+    (tuple order + column list) so a column/order drift or a dropped p_reach
+    lookup is caught without a live LLM run."""
+    import pandas as pd
+
+    legacy = build_barabasi_albert(6, 2, seed=1)
+    legacy = legacy[0] if isinstance(legacy, tuple) else legacy
+    net = DirectedNetwork.from_undirected(legacy, 6, reciprocal=True)
+    opinions = {i: (i % 5) - 2 for i in range(6)}
+    # Shadowban agent 0: its outgoing edges get 0.1, everyone else keeps 1.0.
+    params = {"shadowban_agents": {0}, "shadowban_value": 0.1}
+    for s in list(net.following.keys()):
+        for d in net.following[s]:
+            net.p_reach[(s, d)] = assign_p_reach("shadowban", params, s, d, opinions)
+    names = {i: f"A{i}" for i in range(6)}
+    rows = [
+        (s, d, names[s], names[d], int(mutual), net.get_p_reach(s, d))
+        for s, d, mutual in net.edges()
+    ]
+    df = pd.DataFrame(
+        rows,
+        columns=["src_idx", "dst_idx", "src_name", "dst_name", "mutual", "p_reach"],
+    )
+    assert "p_reach" in df.columns, "directed edge export lost its p_reach column"
+    assert len(df) == len(rows) and len(df) > 0, "empty/miscounted edge export"
+    banned_seen = False
+    for _, r in df.iterrows():
+        expected = 0.1 if int(r["src_idx"]) == 0 else 1.0
+        banned_seen = banned_seen or int(r["src_idx"]) == 0
+        assert abs(float(r["p_reach"]) - expected) < 1e-9, \
+            f"p_reach mismatch on {int(r['src_idx'])}->{int(r['dst_idx'])}: {r['p_reach']}"
+    assert banned_seen, "test setup weak: banned agent 0 had no outgoing edges"
+
+
 if __name__ == "__main__":
     # policy function tests
     test_uniform_returns_value_from_params()
@@ -137,4 +175,6 @@ if __name__ == "__main__":
     test_get_p_reach_returns_one_for_missing_edge()
     test_get_p_reach_returns_stored_value_for_present_edge()
     test_reciprocal_baseline_still_reproduces_undirected_after_p_reach_added()
+    # Task 3.3: edge-export column contract
+    test_directed_edge_export_includes_p_reach_column()
     print("OK")

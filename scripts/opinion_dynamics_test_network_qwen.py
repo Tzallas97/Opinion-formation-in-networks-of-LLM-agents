@@ -122,6 +122,12 @@ def _dump_run_metrics_json():
                 "rag_top_k": getattr(args, "rag_top_k", None),
                 "fact_pack_mode": str(getattr(args, "fact_pack_mode", "")),
                 "think_mode": str(getattr(args, "think_mode", "")),
+                # ADR-006 Component 3: reach policy self-doc (feeds P21, P30).
+                "p_reach_policy": str(getattr(args, "p_reach_policy", "uniform")),
+                "p_reach_uniform_value": getattr(args, "p_reach_uniform_value", None),
+                "p_reach_homophily_k": getattr(args, "p_reach_homophily_k", None),
+                "p_reach_shadowban_fraction": getattr(args, "p_reach_shadowban_fraction", None),
+                "p_reach_shadowban_value": getattr(args, "p_reach_shadowban_value", None),
             }
         except Exception:
             _cfg = {}
@@ -17034,12 +17040,12 @@ def main(
                     # Never dedupe with i<j here - under direction that drops every
                     # high-to-low edge.
                     edge_rows_step = [
-                        (s, d, list_agents[s].agent_name, list_agents[d].agent_name, int(mutual))
+                        (s, d, list_agents[s].agent_name, list_agents[d].agent_name, int(mutual), dir_net.get_p_reach(s, d))
                         for s, d, mutual in dir_net.edges()
                     ]
                     df_edges_step = pd.DataFrame(
                         edge_rows_step,
-                        columns=["src_idx", "dst_idx", "src_name", "dst_name", "mutual"],
+                        columns=["src_idx", "dst_idx", "src_name", "dst_name", "mutual", "p_reach"],
                     )
                 else:
                     edge_rows_step = []
@@ -17129,10 +17135,10 @@ def main(
             B_fill, D_fill, P_fill = _compute_bdp_from_beliefs(current_beliefs_fill)
             if dir_net is not None:
                 final_edge_rows = [
-                    (s, d, list_agents[s].agent_name, list_agents[d].agent_name, int(mutual))
+                    (s, d, list_agents[s].agent_name, list_agents[d].agent_name, int(mutual), dir_net.get_p_reach(s, d))
                     for s, d, mutual in dir_net.edges()
                 ]
-                final_edge_cols = ["src_idx", "dst_idx", "src_name", "dst_name", "mutual"]
+                final_edge_cols = ["src_idx", "dst_idx", "src_name", "dst_name", "mutual", "p_reach"]
             else:
                 final_edge_rows = []
                 for i, neighs in neighbors.items():
