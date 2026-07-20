@@ -3,6 +3,7 @@
 The simulator imports this module to build Watts-Strogatz, Erdos-Renyi, and Barabasi-Albert neighbor dictionaries, apply optional structural homophily, and choose interaction partners using opinion/persona similarity scores. Functions return plain ``dict[int, set[int]]`` structures so the runtime can update edges without depending on NetworkX objects.
 """
 
+import math
 import random
 from typing import Dict, Set, Sequence, Mapping, Union, Any, Callable
 import networkx as nx
@@ -808,6 +809,56 @@ def opinion_only_pair_score(i, j, opinions, attributes=None) -> float:
     return compute_opinion_only_score(i, j, opinions)
 
 
+# --------------------------------------------------------------------------- #
+# ADR-006 Component 3: p_reach pluggable policy pattern.                      #
+# One attribute on directed edges, three assignment policies, one function.   #
+# --------------------------------------------------------------------------- #
+
+def assign_p_reach(policy: str, params: dict, src: int, dst: int,
+                   opinions: dict) -> float:
+    """Assign a reach probability in [0,1] to a directed edge (src -> dst).
+
+    Called by the sim at edge init (and after each rewire when the network
+    evolves per ADR-004). The result is stored on ``DirectedNetwork.p_reach``
+    and consulted at the listener sampling site with a Bernoulli draw against
+    it: the tweet from ``src`` reaches ``dst`` only with probability p_reach.
+
+    Policies (extensible via new elif branches; adding a policy is a function,
+    not a refactor):
+      - ``"uniform"``:    every edge gets ``params.get("uniform_value", 1.0)``.
+                          The dose-response control: does reach dilution alone
+                          matter, holding assignment structure constant?
+      - ``"homophilic"``: p_reach = sigmoid(k * (1 - 2 * normalized_distance))
+                          where distance is |opinion[src] - opinion[dst]| / 4
+                          (4 = max distance on the -2..+2 scale) and
+                          k = ``params.get("homophily_k", 2.0)``. Mimics
+                          engagement-based amplification: similar opinions -> high
+                          reach, dissimilar -> low. Feeds P30 (Cinelli 2021
+                          Twitter/FB echo-chamber pattern).
+      - ``"shadowban"``:  a preselected subset (``params["shadowban_agents"]``)
+                          gets ``params["shadowban_value"]`` (default 0.1) on
+                          every outgoing edge; everyone else keeps 1.0. Feeds
+                          P21 (thesis Sec. 5.3 shadow-banning).
+
+    Any other policy string raises ValueError with the offending name in the
+    message so debugging is quick.
+    """
+    if policy == "uniform":
+        return float(params.get("uniform_value", 1.0))
+    if policy == "homophilic":
+        k = float(params.get("homophily_k", 2.0))
+        # Max opinion distance on the -2..+2 scale is 4. Normalize to [0,1],
+        # then map to [-1, 1] so sigmoid centres at distance 2 (moderate pair).
+        dist = abs(int(opinions[src]) - int(opinions[dst])) / 4.0
+        return 1.0 / (1.0 + math.exp(-k * (1.0 - 2.0 * dist)))
+    if policy == "shadowban":
+        banned = params.get("shadowban_agents", set())
+        if int(src) in banned:
+            return float(params.get("shadowban_value", 0.1))
+        return 1.0
+    raise ValueError(f"unknown p_reach policy: {policy!r}")
+
+
 def choose_partner_scoring(
     agent_idx: int,
     candidates: Sequence[int],
@@ -932,7 +983,7 @@ class DirectedNetwork:
     forget the other, which is the failure mode this class exists to prevent.
     """
 
-    __slots__ = ("following", "followers", "reciprocal", "n", "changes")
+    __slots__ = ("following", "followers", "reciprocal", "n", "changes", "p_reach")
 
     def __init__(self, num_agents: int, reciprocal: bool = True):
         self.n = int(num_agents)
@@ -940,6 +991,12 @@ class DirectedNetwork:
         self.following = {i: set() for i in range(self.n)}
         self.followers = {i: set() for i in range(self.n)}
         self.changes = []          # (step, src, dst, "add"|"cut", reason)
+        # ADR-006 Component 3: p_reach ∈ [0,1] per directed edge (src, dst).
+        # Starts empty; the sim populates it at edge init via assign_p_reach
+        # under the chosen policy (uniform / homophilic / shadowban). Missing
+        # entries return 1.0 via get_p_reach() -> byte-identical baseline for
+        # any consumer that never calls into the policy layer.
+        self.p_reach = {}
 
     # ---------------------------------------------------------------- building
 
@@ -965,6 +1022,16 @@ class DirectedNetwork:
 
     def has_edge(self, src: int, dst: int) -> bool:
         return int(dst) in self.following.get(int(src), ())
+
+    def get_p_reach(self, src: int, dst: int) -> float:
+        """ADR-006 Component 3: reach probability for directed edge (src, dst).
+
+        Returns 1.0 for any edge that has not been assigned by the sim - which
+        is the byte-identical baseline: existing consumers that draw against
+        1.0 always keep the tweet. The Bernoulli guard at the listener sampling
+        site is a no-op under this default.
+        """
+        return float(self.p_reach.get((int(src), int(dst)), 1.0))
 
     def add_edge(self, src: int, dst: int, step: int = -1, reason: str = "") -> bool:
         """Add src -> dst (and the mirror when reciprocal). False if it existed."""
