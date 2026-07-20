@@ -518,6 +518,7 @@ DEFAULT_SETTINGS = {
     "max_step_change": "1",
     "allowed_update_mode": "assimilation_only",
     "validation_strictness": "strict",
+    "allow_silence": "off",
     "wrong_side_explanation_requery": "off",
     "deterministic": "off",
     "structured_output": "off",
@@ -1881,6 +1882,12 @@ class LauncherUI(tk.Tk):
         ttk.Combobox(cfg_global, textvariable=self.deterministic_var, values=["off", "on"], width=8, state="readonly").grid(row=6, column=1, sticky="w", padx=6)
         ttk.Label(cfg_global, text="on = temperature 0 / greedy decoding for both steps: identical outputs on identical seed. Kills variety - use for debugging or exact replication, not for natural-sounding runs.",
                   style="Muted.TLabel", wraplength=620, justify="left").grid(row=6, column=2, columnspan=3, sticky="w")
+        # ADR-006 Component 2: silence-as-choice global flag.
+        ttk.Label(cfg_global, text="Allow silence in step2:").grid(row=7, column=0, sticky="w", pady=6)
+        self.allow_silence_var = tk.StringVar(value=self._settings.get("allow_silence", "off"))
+        ttk.Combobox(cfg_global, textvariable=self.allow_silence_var, values=["off", "on"], width=8, state="readonly").grid(row=7, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_global, text="on = ο agent μπορεί να επιστρέψει `<silent>` και να μη γράψει tweet (mechanism-agnostic silence option, feeds P12). off (default) = byte-identical με προ-ADR-006, το step2 template renderάρεται χωρίς silence block. Πλήρη Noels 4-way parser dispatch + rich silence log θα προστεθούν σε Task 2.3b.",
+                  style="Muted.TLabel", wraplength=620, justify="left").grid(row=7, column=2, columnspan=3, sticky="w")
         ttk.Label(cfg_global, text="Wrong-side explanation re-query:").grid(row=4, column=0, sticky="w", pady=6)
         self.wrong_side_requery_var = tk.StringVar(value=self._settings.get("wrong_side_explanation_requery", "off"))
         ttk.Combobox(cfg_global, textvariable=self.wrong_side_requery_var, values=["off", "on"], width=8, state="readonly").grid(row=4, column=1, sticky="w", padx=6)
@@ -4044,6 +4051,7 @@ class LauncherUI(tk.Tk):
             "max_step_change": getattr(self, "max_step_change_var", tk.StringVar(value="1")).get().strip(),
             "allowed_update_mode": self._normalize_allowed_update_mode_ui(),
             "validation_strictness": (getattr(self, "validation_strictness_var", tk.StringVar(value="strict")).get() or "strict"),
+            "allow_silence": (getattr(self, "allow_silence_var", tk.StringVar(value="off")).get() or "off"),
             "wrong_side_explanation_requery": (getattr(self, "wrong_side_requery_var", tk.StringVar(value="off")).get() or "off"),
             "deterministic": (getattr(self, "deterministic_var", tk.StringVar(value="off")).get() or "off"),
             "structured_output": (getattr(self, "structured_output_var", tk.StringVar(value="off")).get() or "off"),
@@ -5917,6 +5925,10 @@ class LauncherUI(tk.Tk):
         validation_strictness = (getattr(self, "validation_strictness_var", tk.StringVar(value="strict")).get() or "strict").strip()
         if _supports("--validation_strictness"):
             cmd += ["--validation_strictness", validation_strictness]
+        # ADR-006 Component 2: pass --allow_silence through if the sim exposes it.
+        allow_silence = (getattr(self, "allow_silence_var", tk.StringVar(value="off")).get() or "off").strip()
+        if _supports("--allow_silence"):
+            cmd += ["--allow_silence", allow_silence]
         wrong_side_requery = (getattr(self, "wrong_side_requery_var", tk.StringVar(value="off")).get() or "off").strip()
         if _supports("--wrong_side_explanation_requery"):
             cmd += ["--wrong_side_explanation_requery", wrong_side_requery]

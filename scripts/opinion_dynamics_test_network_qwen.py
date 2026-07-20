@@ -24,6 +24,7 @@ from prompts.opinion_dynamics.Flache_2017.content.fact_packs import FACT_PACKS
 from prompts.opinion_dynamics.Flache_2017.content.world_rules import WORLD_RULES as EXTERNAL_WORLD_RULES, WORLD_LABELS
 from network_models import build_small_world, build_erdos_renyi, build_barabasi_albert, choose_partner_scoring
 from network_models import DirectedNetwork, evolve_once  # coevolving network, opt-in via --network_evolves
+from step2_io import render_step2_template  # ADR-006 Component 2 (silence-as-choice) template renderer
 import event_injection  # timed population-level shock, opt-in via --event_step
 import run_naming  # shared mode-abbreviation + run-stem naming
 import opinion_metrics  # shared B/D/P definitions
@@ -3642,6 +3643,22 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--allow_silence",
+    default="off",
+    choices=["off", "on"],
+    type=str,
+    help="ADR-006 Component 2 (silence-as-choice, feeds P12). off (default) = "
+         "byte-identical with pre-ADR-006 behavior: the step2 template renders "
+         "without any silence-option instructions. on = a mechanism-agnostic "
+         "block is injected that lets the agent return the exact token "
+         "<silent> in place of a tweet. The Task 2.3b parser dispatch and "
+         "silence-log wiring (deferred to a follow-up task) is what actually "
+         "records the event; with just the flag on, a <silent> response from "
+         "the model would currently fall through to the existing parse-fail "
+         "path.",
+)
+
+parser.add_argument(
     "--trace",
     default="auto",
     choices=["auto", "off", "minimal", "full"],
@@ -4018,6 +4035,13 @@ MEMORY_LIGHT_ENABLED = MEMORY_MODE == "light"
 PERSONA_MODE = str(getattr(args, "persona_mode", "full") or "full").strip().lower()
 if PERSONA_MODE not in {"full", "none"}:
     PERSONA_MODE = "full"
+# ADR-006 Component 2: silence-as-choice flag. Default "off" preserves
+# byte-identical baseline. The step2 template loader (below) always calls
+# render_step2_template(..., allow_silence=ALLOW_SILENCE), and the renderer's
+# off-branch strips the ALLOW_SILENCE_BLOCK marker with its surrounding blank
+# lines - i.e. the rendered text equals what the raw template produced before
+# Task 2.1 inserted the marker.
+ALLOW_SILENCE = str(getattr(args, "allow_silence", "off") or "off").strip().lower() == "on"
 
 # These rules are injected only when stored memory is exposed to the LLM.
 # They are prepended at memory-render time, not saved into memory, so they do not
@@ -7008,6 +7032,13 @@ class Agent:
 
         with open(join(self.prompt_template_root, filename), "r", encoding="utf-8") as f:
             prompt_instructions = f.read()
+
+        # ADR-006 Component 2: always route the template through the silence
+        # renderer. With ALLOW_SILENCE=False (default) the marker + surrounding
+        # blank lines are stripped so the text is byte-identical with the
+        # pre-Task-2.1 template. With True the mechanism-agnostic silence
+        # option block is substituted in.
+        prompt_instructions = render_step2_template(prompt_instructions, allow_silence=ALLOW_SILENCE)
 
         prompt_template = prompt_instructions.split("\n---------------------------\n")[0]
         prompt_template = _ensure_step2_fact_pack_rules_placeholder(prompt_template)
