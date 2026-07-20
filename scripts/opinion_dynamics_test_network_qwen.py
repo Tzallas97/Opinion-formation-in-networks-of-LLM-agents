@@ -3630,6 +3630,18 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--persona_mode",
+    default="full",
+    choices=["full", "none"],
+    type=str,
+    help="Persona detail level. full uses the whole persona card (occupation, "
+         "politics, background, behavioural layers). none blanks every persona "
+         "attribute except the agent name (initial belief still comes from the "
+         "opinion distribution), making agents homogeneous - a control for how "
+         "much of the dynamics is driven by persona heterogeneity.",
+)
+
+parser.add_argument(
     "--trace",
     default="auto",
     choices=["auto", "off", "minimal", "full"],
@@ -4003,6 +4015,9 @@ if MEMORY_MODE not in {"enabled", "light", "off"}:
     MEMORY_MODE = "enabled"
 MEMORY_ENABLED = MEMORY_MODE != "off"
 MEMORY_LIGHT_ENABLED = MEMORY_MODE == "light"
+PERSONA_MODE = str(getattr(args, "persona_mode", "full") or "full").strip().lower()
+if PERSONA_MODE not in {"full", "none"}:
+    PERSONA_MODE = "full"
 
 # These rules are injected only when stored memory is exposed to the LLM.
 # They are prepended at memory-render time, not saved into memory, so they do not
@@ -6427,6 +6442,28 @@ class Agent:
             agency_vs_fatalism=self.agency_vs_fatalism,
             conflict_style=self.conflict_style,
         )
+        if PERSONA_MODE == "none":
+            # Persona-off control: strip every persona attribute to isolate how
+            # much of the collective dynamics is driven by agent heterogeneity.
+            # Only the name survives; the initial belief still comes from the
+            # opinion distribution. Every downstream consumer (prompt card,
+            # homophily scoring, validation policy) then sees an identical,
+            # empty persona.
+            _name_only = "AGENT_PERSONA_CARD\nName: " + str(self.agent_name)
+            self.persona = _name_only
+            self.persona_public = _name_only
+            self.background = ""
+            for _attr in (
+                "epistemic_profile", "institutional_trust", "uncertainty_tolerance",
+                "evidence_style", "official_narrative_suspicion", "openness_to_update",
+                "age_group", "flavor_gender", "flavor_ethnicity", "education_level",
+                "training_style", "domain_familiarity", "topic_interest",
+                "prior_exposure", "lifestyle_notes", "tone_hint", "age", "gender",
+                "ethnicity", "education", "occupation", "political_leaning",
+                "early_life", "value_orientation", "agency_vs_fatalism", "conflict_style",
+            ):
+                setattr(self, _attr, "")
+            self.persona_policy = _compile_persona_validation_policy()
         self.count_tweet_written, self.count_tweet_seen = 0, 0
         self.previous_interaction_type = "none"
         self.same_side_pos_edge_hits = 0
