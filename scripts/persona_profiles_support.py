@@ -79,7 +79,14 @@ DEFAULT_SCHEMA = {
         "uncertainty_tolerance": "medium",
         "evidence_style": "mixed",
         "official_narrative_suspicion": "medium",
-        "openness_to_update": "medium"
+        "openness_to_update": "medium",
+        # ADR-006 Component 1 additions (defaults are neutral -> byte-identical baseline).
+        # locus_of_control: Rotter 1966 - "internal" agents update from arguments/evidence,
+        #                   "external" update from majority/social pressure, "mixed" = neutral.
+        # contrarianism:    Flache 2017 (repulsive influence) - "very_high" strongly diverges
+        #                   from perceived majority, "very_low" strongly conforms, "medium" = neutral.
+        "locus_of_control": "mixed",
+        "contrarianism": "medium"
     },
     "topic_linked": {
         "occupation": "",
@@ -116,6 +123,9 @@ DEFAULT_SCHEMA = {
         "evidence_style": ["concrete_first", "source_first", "coherence_first", "intuition_first", "mixed"],
         "official_narrative_suspicion": ["very_low", "low", "medium", "high", "very_high"],
         "openness_to_update": ["very_low", "low", "medium", "high", "very_high"],
+        # ADR-006 Component 1 additions.
+        "locus_of_control": ["internal", "mixed", "external"],
+        "contrarianism": ["very_low", "low", "medium", "high", "very_high"],
         "education_level": ["high_school", "bachelor", "master", "phd", "other"],
         "training_style": ["technical", "humanities", "social_science", "mixed", "none"],
         "domain_familiarity": ["none", "low", "medium", "high"],
@@ -143,7 +153,9 @@ DEFAULT_PROFILES = {
                 "uncertainty_tolerance": "medium",
                 "evidence_style": "concrete_first",
                 "official_narrative_suspicion": "low",
-                "openness_to_update": "medium"
+                "openness_to_update": "medium",
+                "locus_of_control": "mixed",
+                "contrarianism": "medium"
             },
             "topic_linked": {
                 "occupation": "",
@@ -190,7 +202,9 @@ DEFAULT_PROFILES = {
                 "uncertainty_tolerance": "low",
                 "evidence_style": "coherence_first",
                 "official_narrative_suspicion": "high",
-                "openness_to_update": "low"
+                "openness_to_update": "low",
+                "locus_of_control": "mixed",
+                "contrarianism": "medium"
             },
             "topic_linked": {
                 "occupation": "",
@@ -237,7 +251,9 @@ DEFAULT_PROFILES = {
                 "uncertainty_tolerance": "high",
                 "evidence_style": "coherence_first",
                 "official_narrative_suspicion": "high",
-                "openness_to_update": "high"
+                "openness_to_update": "high",
+                "locus_of_control": "mixed",
+                "contrarianism": "medium"
             },
             "topic_linked": {
                 "occupation": "",
@@ -284,7 +300,9 @@ DEFAULT_PROFILES = {
                 "uncertainty_tolerance": "low",
                 "evidence_style": "source_first",
                 "official_narrative_suspicion": "low",
-                "openness_to_update": "low"
+                "openness_to_update": "low",
+                "locus_of_control": "mixed",
+                "contrarianism": "medium"
             },
             "topic_linked": {
                 "occupation": "",
@@ -331,7 +349,9 @@ DEFAULT_PROFILES = {
                 "uncertainty_tolerance": "high",
                 "evidence_style": "concrete_first",
                 "official_narrative_suspicion": "medium",
-                "openness_to_update": "medium"
+                "openness_to_update": "medium",
+                "locus_of_control": "mixed",
+                "contrarianism": "medium"
             },
             "topic_linked": {
                 "occupation": "",
@@ -378,7 +398,9 @@ DEFAULT_PROFILES = {
                 "uncertainty_tolerance": "medium",
                 "evidence_style": "concrete_first",
                 "official_narrative_suspicion": "medium",
-                "openness_to_update": "medium"
+                "openness_to_update": "medium",
+                "locus_of_control": "mixed",
+                "contrarianism": "medium"
             },
             "topic_linked": {
                 "occupation": "",
