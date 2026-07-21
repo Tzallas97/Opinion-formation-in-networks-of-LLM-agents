@@ -157,6 +157,7 @@ def _dump_run_metrics_json():
                 "p_reach_homophily_k": getattr(args, "p_reach_homophily_k", None),
                 "p_reach_shadowban_fraction": getattr(args, "p_reach_shadowban_fraction", None),
                 "p_reach_shadowban_value": getattr(args, "p_reach_shadowban_value", None),
+                "p_reach_enforcement": str(getattr(args, "p_reach_enforcement", "filter")),
             }
         except Exception:
             _cfg = {}
@@ -3739,6 +3740,25 @@ parser.add_argument(
     type=float,
     help="ADR-006 Component 3, shadowban policy. Reach probability for the "
          "penalised agents' outgoing edges. Default 0.1.",
+)
+parser.add_argument(
+    "--p_reach_enforcement",
+    default="filter",
+    choices=["filter", "suppress"],
+    type=str,
+    help="ADR-006 Component 3, roads_not_taken 3.11 (fix gamma). HOW a sub-1.0 "
+         "p_reach is enforced. filter (default, byte-identical): a candidate "
+         "speaker is dropped from the listener's candidate set with prob "
+         "1 - p_reach (Bernoulli on the MAIN rng) -> a throttled speaker is "
+         "rarely CHOSEN (models reduced feed surfacing, but its rng draws make "
+         "single-seed uniform-vs-treatment comparisons diverge). suppress "
+         "(gamma, skip-preserving): candidates are NOT filtered, so the speaker "
+         "is chosen exactly as in a uniform baseline (identical interaction "
+         "sequence); if the chosen speaker is throttled, a DEDICATED-rng "
+         "Bernoulli decides whether the tweet lands, and on failure the "
+         "listener's belief update is not applied (models de-ranked/ignored "
+         "delivery). suppress yields a clean single-seed causal contrast because "
+         "the main rng stream is untouched.",
 )
 
 # --- ADR-006 Component 4: Bian 5-dim diagnostic opt-in (feeds P28) ---
@@ -16355,6 +16375,15 @@ def main(
             # rewires (evolve_once) do NOT re-populate here - the sim leaves the
             # rewire+policy interaction to a later ADR when we have data.
             if _p_reach_active:
+                # ADR-006 roads_not_taken 3.11 (fix gamma). Enforcement mode decides
+                # HOW a sub-1.0 reach acts (see argparse help). "suppress"
+                # (skip-preserving) draws ALL p_reach randomness from a DEDICATED rng
+                # so the main interaction stream stays byte-identical to a uniform
+                # baseline (same listeners AND speakers) - the only difference is
+                # whether a throttled tweet's belief update is applied. "filter"
+                # (default) keeps the main rng for byte-identical pre-gamma behaviour.
+                _p_reach_enforcement = str(getattr(args, "p_reach_enforcement", "filter")).strip().lower()
+                _p_reach_rng = random.Random(int(getattr(args, "seed", 0) or 0) + 987654321)
                 _p_reach_params = {
                     "uniform_value": _p_reach_uniform_value,
                     "homophily_k": float(getattr(args, "p_reach_homophily_k", 2.0)),
@@ -16363,8 +16392,11 @@ def main(
                 if _p_reach_policy == "shadowban":
                     _sb_fraction = float(getattr(args, "p_reach_shadowban_fraction", 0.1))
                     _n_banned = max(1, int(round(_sb_fraction * num_agents)))
+                    # In suppress mode the shadowban draw must also avoid the main rng
+                    # (otherwise the treatment's stream diverges from uniform).
+                    _sb_rng = _p_reach_rng if _p_reach_enforcement == "suppress" else rng
                     _p_reach_params["shadowban_agents"] = set(
-                        rng.sample(range(num_agents), min(_n_banned, num_agents))
+                        _sb_rng.sample(range(num_agents), min(_n_banned, num_agents))
                     )
                 for _src in list(dir_net.following.keys()):
                     for _dst in dir_net.following[_src]:
@@ -16443,7 +16475,7 @@ def main(
                 # is active - guaranteeing byte-identical baseline otherwise (a
                 # uniform=1.0 draw always succeeds anyway, but we skip the loop
                 # to keep the RNG stream identical to pre-Component-3 runs).
-                if dir_net is not None and _p_reach_active and neigh_set:
+                if dir_net is not None and _p_reach_active and neigh_set and _p_reach_enforcement == "filter":
                     _filtered = [
                         _s for _s in candidate_speakers
                         if rng.random() < dir_net.get_p_reach(_s, listener_idx)
@@ -16455,6 +16487,8 @@ def main(
                     # neighbors" fallback semantics rather than silently
                     # dropping the interaction. A counter for these events is
                     # deferred to Task 2.3b-style dispatch work.
+                    # (suppress mode does NOT filter candidates here; the reach
+                    # check happens after speaker selection - see below.)
 
             sel_mode = str(getattr(args, "interaction_selection", "homophily")).strip().lower()
             hom_mode = str(getattr(args, "interaction_homophily_mode", "full")).strip().lower()
@@ -16475,6 +16509,16 @@ def main(
 
             agent_i = list_agents[listener_idx]   # listener
             agent_j = list_agents[speaker_idx]    # speaker
+
+            # ADR-006 fix gamma (suppress mode): the throttled speaker was eligible
+            # and may have been chosen (candidates unfiltered -> main stream identical
+            # to uniform). Draw the reach Bernoulli from the DEDICATED rng; on failure
+            # the tweet does not land, and the listener's belief update is skipped at
+            # the commit site below. filter mode leaves this False.
+            _reach_suppressed = False
+            if dir_net is not None and _p_reach_active and _p_reach_enforcement == "suppress":
+                if _p_reach_rng.random() >= dir_net.get_p_reach(speaker_idx, listener_idx):
+                    _reach_suppressed = True
 
             beliefs_before_step = [int(a.current_belief) for a in list_agents]
             B_before_step, D_before_step, P_before_step = _compute_bdp_from_beliefs(beliefs_before_step)
@@ -16797,6 +16841,15 @@ def main(
             if 'same_rating_cross_bin_wording' in repair_tags_i or 'moved_rating_stale_category_wording' in repair_tags_i:
                 _metric_inc('explanation_category_repair_count')
 
+            if _reach_suppressed:
+                # gamma skip-preserving shadowban: the throttled speaker's tweet did
+                # not reach this listener, so no opinion change is applied. The LLM
+                # was still queried and the main rng stream is untouched (the
+                # interaction body draws no main rng), giving a clean single-seed
+                # causal contrast vs uniform - the sole difference is whether
+                # throttled tweets land.
+                new_belief = agent_i_pre_belief
+                _metric_inc('p_reach_suppressed_interactions')
             agent_i.current_belief = int(new_belief)
             agent_i_post_belief = agent_i.current_belief
             opinions_by_idx[listener_idx] = agent_i.current_belief
