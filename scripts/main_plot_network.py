@@ -5191,6 +5191,8 @@ def main():
     # Markov transition matrix from interactions CSV (one matrix per run)
     # -----------------------------
     try:
+        if not ctx["has_interactions"]:
+            raise _NotApplicable("no interactions CSV in this run")
         interactions_csv = build_input_interactions_csv_path(args)
         print(f"[markov] Using interactions CSV: {interactions_csv}")
         counts_df, probs_df = compute_markov_transition_matrix_from_interactions(interactions_csv)
@@ -5237,6 +5239,8 @@ def main():
             print(f"Saved Markov window '{label}' probs  plot to: {out_probs_plot_w}")
             print(f"Saved Markov window '{label}' counts plot to: {out_counts_plot_w}")
 
+    except _NotApplicable as na:
+        print(f"[markov] not applicable for this run ({na})")
     except Exception as e:
         print(f"[markov] Skipping Markov matrix due to error: {e}")
 
