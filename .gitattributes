@@ -2,7 +2,7 @@
 # each machine's core.autocrlf setting.
 * text=auto eol=lf
 
-# CLAUDE.md makes CRLF a hard requirement for the launcher: keep it CRLF on
+# The launcher requires CRLF as a hard project requirement: keep it CRLF on
 # checkout everywhere.
 scripts/ui_lancher11.py text eol=crlf
 

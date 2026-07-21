@@ -81,7 +81,7 @@ def _metric_inc(key: str, n: int = 1):
 def _load_bian_scores_if_requested():
     """ADR-006 Component 4: if --include_bian_scores on, run (or reuse a
     cached) Bian 5-dim diagnostic for this run's model and return its scores
-    dict, else None. Cached per model under ~/.claude_bian_cache/<model>.json;
+    dict, else None. Cached per model under ~/.bian_cache/<model>.json;
     any failure is non-fatal (returns None with a printed note)."""
     if str(getattr(args, "include_bian_scores", "off")).strip().lower() != "on":
         return None
@@ -90,7 +90,7 @@ def _load_bian_scores_if_requested():
         model = str(getattr(args, "model_name", "") or "")
         if not model:
             return None
-        cache_dir = os.path.join(os.path.expanduser("~"), ".claude_bian_cache")
+        cache_dir = os.path.join(os.path.expanduser("~"), ".bian_cache")
         os.makedirs(cache_dir, exist_ok=True)
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", model)
         cache_path = os.path.join(cache_dir, safe + ".json")
@@ -3768,7 +3768,7 @@ parser.add_argument(
     choices=["off", "on"],
     type=str,
     help="ADR-006 Component 4. When on, run tools/bian_diagnostic.py for the "
-         "model of this run (cached per model under ~/.claude_bian_cache) and "
+         "model of this run (cached per model under ~/.bian_cache) and "
          "copy the 5 validity scores into run_metrics.json. off (default) = "
          "no-op, byte-identical baseline.",
 )
