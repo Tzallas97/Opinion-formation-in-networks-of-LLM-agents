@@ -4567,6 +4567,142 @@ def plot_opinion_ridgeline(csv_path: str, out_path: str, fig_type: str, num_agen
     print(f"Saved opinion ridgeline to: {out_path}")
 
 
+def build_output_p_reach_path(args, csv_path: str) -> str:
+    """Output path for the ADR-006 Component 3 p_reach (algorithmic reach) plot."""
+    out_dir = _build_plot_subdir(csv_path, args)
+    run_stem = _get_run_stem(csv_path)
+    return os.path.join(out_dir, f"{run_stem}_p_reach_agent_reach.{args.figure_file_type}")
+
+
+def plot_p_reach_agent_reach(edges_csv_path: str, out_path: str, fig_type: str = "png") -> None:
+    """Bar chart of each agent's mean OUTGOING p_reach (ADR-006 Component 3).
+
+    Makes the reach policy visible on the population: agents whose outgoing edges
+    were throttled (shadowban low value, or low-homophily reach) show a reduced
+    bar and are coloured red, while full-reach agents sit at 1.0. Only meaningful
+    when reach varies (uniform=1.0 is skipped by the caller)."""
+    df = pd.read_csv(edges_csv_path)
+    reach = df.groupby("src_idx")["p_reach"].mean().sort_index()
+    names = df.groupby("src_idx")["src_name"].first()
+    fig, ax = plt.subplots(figsize=(max(6.0, len(reach) * 0.55), 4.0))
+    colors = ["#d73027" if v < 0.999 else "#4575b4" for v in reach.values]
+    ax.bar([str(int(i)) for i in reach.index], reach.values, color=colors)
+    ax.axhline(1.0, ls="--", c="gray", lw=0.8)
+    ax.set_ylim(0, 1.06)
+    ax.set_ylabel("mean outgoing p_reach")
+    ax.set_xlabel("agent idx")
+    ax.set_title("Algorithmic reach per agent (ADR-006 p_reach)  —  red = throttled")
+    n_lo = int((reach.values < 0.999).sum())
+    throttled = ", ".join(f"{int(i)}:{names.get(i, '')}" for i, v in reach.items() if v < 0.999)
+    ax.text(0.99, 0.98, f"{n_lo}/{len(reach)} agents throttled\n{throttled}",
+            transform=ax.transAxes, ha="right", va="top", fontsize=8,
+            bbox=dict(boxstyle="round", fc="white", ec="#d73027", alpha=0.8))
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved p_reach agent-reach plot to: {out_path}")
+
+
+def build_output_p_reach_network_path(args, csv_path: str) -> str:
+    """Output path for the p_reach directed-network diagram (ADR-006 Component 3)."""
+    out_dir = _build_plot_subdir(csv_path, args)
+    run_stem = _get_run_stem(csv_path)
+    return os.path.join(out_dir, f"{run_stem}_p_reach_network.{args.figure_file_type}")
+
+
+def _belief_bucket_color(v) -> str:
+    return {-2: "#d73027", -1: "#fc8d59", 0: "#cccccc", 1: "#91bfdb", 2: "#4575b4"}.get(
+        int(round(float(v))), "#cccccc")
+
+
+def plot_p_reach_network(edges_csv_path: str, opinion_change_csv: str, out_path: str,
+                         fig_type: str = "png", num_agents=None) -> None:
+    """Directed follow-graph with edge opacity + width proportional to p_reach
+    (ADR-006 Component 3). Throttled agents (reduced mean outgoing reach) get a
+    red node border; nodes are coloured by their FINAL belief. Makes the reach
+    policy and exactly which agents it targets visible on the real network."""
+    edf = pd.read_csv(edges_csv_path)
+    G = nx.DiGraph()
+    for _, r in edf.iterrows():
+        G.add_edge(str(r["src_name"]), str(r["dst_name"]), p_reach=float(r["p_reach"]))
+    if G.number_of_nodes() == 0:
+        raise ValueError("empty edge graph")
+    try:
+        pos = nx.kamada_kawai_layout(G)          # needs scipy
+    except Exception:
+        pos = nx.spring_layout(G, seed=42)       # dependency-free fallback
+
+    op = pd.read_csv(opinion_change_csv)
+    last = op.iloc[-1]
+    belief_by_name = {c: last[c] for c in op.columns if c != "time_step"}
+    out_reach = edf.groupby("src_name")["p_reach"].mean().to_dict()
+
+    nodes = list(G.nodes())
+    node_colors = [_belief_bucket_color(belief_by_name.get(n, 0)) for n in nodes]
+    node_borders = ["#f4b400" if out_reach.get(n, 1.0) < 0.999 else "#333333" for n in nodes]
+    node_lw = [3.6 if out_reach.get(n, 1.0) < 0.999 else 0.6 for n in nodes]
+    edge_pr = [G[u][v]["p_reach"] for u, v in G.edges()]
+    edge_colors = [(0.15, 0.15, 0.15, max(0.06, p)) for p in edge_pr]   # alpha ~ reach
+    edge_widths = [0.4 + 2.2 * p for p in edge_pr]                       # width ~ reach
+
+    fig, ax = plt.subplots(figsize=(8.5, 7.5))
+    nx.draw_networkx_edges(G, pos, edge_color=edge_colors, width=edge_widths, arrows=True,
+                           arrowsize=8, connectionstyle="arc3,rad=0.06", ax=ax)
+    nx.draw_networkx_nodes(G, pos, nodelist=nodes, node_color=node_colors,
+                           edgecolors=node_borders, linewidths=node_lw, node_size=430, ax=ax)
+    nx.draw_networkx_labels(G, pos, font_size=7, ax=ax)
+    n_lo = sum(1 for v in out_reach.values() if v < 0.999)
+    ax.set_title(f"p_reach follow graph  —  edge opacity/width ∝ reach, gold ring = throttled ({n_lo} agents)")
+    ax.axis("off")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved p_reach network diagram to: {out_path}")
+
+
+class _NotApplicable(Exception):
+    """Raised at the top of a plot group when that family does not apply to this
+    run type (e.g. network / interaction plots for a solo_check run). Caught as a
+    clean, deterministic SKIP -- not an error -- so we generate only the plots that
+    make sense for the run, instead of attempting all of them and skipping on
+    failure. New plot families should gate the same way (declare when they apply)."""
+
+
+def _build_run_context(args, csv_path):
+    """Detect which plot families apply to THIS run from the CSVs it produced.
+
+    A solo_check run (the LLM answers alone, no network) produces no
+    interactions / edges / step-summary CSVs, so network / interaction / profile
+    plots are not applicable and should be skipped by design rather than by error.
+    """
+    import glob as _glob
+
+    run_dir = os.path.dirname(csv_path)
+
+    def _glob_has(pattern):
+        return bool(_glob.glob(os.path.join(run_dir, pattern)))
+
+    has_interactions = _glob_has("*interactions*.csv")
+    has_step_summary = _glob_has("*step_summary*.csv")
+    has_agent_summary = _glob_has("*agent_summary*.csv")
+    has_rag = _glob_has("*rag*retrieval*.csv") or _glob_has("*rag*.csv")
+    has_edges = _glob_has("*_step_*_edges*.csv")
+    is_network = has_interactions or has_edges or has_step_summary
+    ctx = {
+        "run_dir": run_dir,
+        "is_network": is_network,
+        "has_interactions": has_interactions,
+        "has_step_summary": has_step_summary,
+        "has_agent_summary": has_agent_summary,
+        "has_rag": has_rag,
+        "has_edges": has_edges,
+    }
+    print("[plot-plan] run=%s | interactions=%s edges=%s step_summary=%s rag=%s personas=%s"
+          % ("NETWORK" if is_network else "SOLO/no-network",
+             has_interactions, has_edges, has_step_summary, has_rag, has_agent_summary))
+    return ctx
+
+
 def main():
     """Run the full plotting/post-processing pipeline for one completed simulation run."""
     args = parse_args()
@@ -4574,6 +4710,8 @@ def main():
 
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Could not find input CSV: {csv_path}")
+
+    ctx = _build_run_context(args, csv_path)
 
     out_ts_path = build_output_timeseries_path(args, csv_path)
     plot_opinion_trajectories(
@@ -4733,6 +4871,8 @@ def main():
             print(f"[rag-direction] Skipping RAG direction breakdown due to error: {e}")
 
     try:
+        if not ctx["is_network"]:
+            raise _NotApplicable("no network graph in this run")
         out_prefix_for_network_metrics = args.output_file if args.output_file else f"seed{args.seed}"
         network_metrics_df = save_network_assortativity_metrics(
             csv_path=csv_path,
@@ -4746,10 +4886,14 @@ def main():
             out_path=build_output_network_assortativity_plot_path(args, csv_path),
             fig_type=args.figure_file_type,
         )
+    except _NotApplicable as na:
+        print(f"[network-assortativity] not applicable for this run ({na})")
     except Exception as e:
         print(f"[network-assortativity] Skipping network metrics due to error: {e}")
 
     try:
+        if not ctx["is_network"]:
+            raise _NotApplicable("no network graph in this run")
         agent_summary_csv_for_ba = build_input_agent_summary_csv_path(args)
         ba_assignment_df = save_ba_hub_assignment_metrics(
             agent_summary_csv_path=agent_summary_csv_for_ba,
@@ -4760,10 +4904,14 @@ def main():
             out_path=build_output_ba_hub_assignment_plot_path(args, csv_path),
             fig_type=args.figure_file_type,
         )
+    except _NotApplicable as na:
+        print(f"[ba-hub-assignment] not applicable for this run ({na})")
     except Exception as e:
         print(f"[ba-hub-assignment] Skipping BA hub assignment metrics due to error: {e}")
 
     try:
+        if not ctx["is_network"]:
+            raise _NotApplicable("no network graph in this run")
         network_structure_csv_for_diag = _try_builder(build_input_network_structure_summary_csv_path, args)
         network_agent_csv_for_diag = _try_builder(build_input_network_agent_metrics_csv_path, args)
         interaction_influence_csv_for_diag = _try_builder(build_input_interaction_influence_events_csv_path, args)
@@ -4781,10 +4929,14 @@ def main():
             agent_influence_csv_path=agent_influence_csv_for_diag,
             exposure_persuasion_csv_path=exposure_persuasion_csv_for_diag,
         )
+    except _NotApplicable as na:
+        print(f"[network-influence] not applicable for this run ({na})")
     except Exception as e:
         print(f"[network-influence] Skipping qwen10 network/influence diagnostic plots due to error: {e}")
 
     try:
+        if not ctx["is_network"]:
+            raise _NotApplicable("no network graph in this run")
         out_prefix_for_network_detail = args.output_file if args.output_file else f"seed{args.seed}"
         plot_ego_network_belief_timelines(
             csv_path=csv_path,
@@ -4819,10 +4971,42 @@ def main():
             out_path=build_output_agent_neighborhood_alignment_plot_path(args, csv_path),
             fig_type=args.figure_file_type,
         )
+    except _NotApplicable as na:
+        print(f"[network-detail] not applicable for this run ({na})")
     except Exception as e:
         print(f"[network-detail] Skipping ego/edge detail plots due to error: {e}")
 
+    # ADR-006 Component 3: algorithmic-reach (p_reach) plot. Only when the run has
+    # directed-edge CSVs AND reach actually varies (a non-uniform policy) -- the
+    # uniform=1.0 baseline has nothing to show, so it is skipped by design.
     try:
+        import glob as _g
+        edge_files = sorted(_g.glob(os.path.join(ctx["run_dir"], "*_step_*_edges*.csv")))
+        if not (ctx["has_edges"] and edge_files):
+            raise _NotApplicable("no directed-edge CSVs in this run")
+        _edf = pd.read_csv(edge_files[0])
+        if "p_reach" not in _edf.columns or float(_edf["p_reach"].min()) >= 0.999:
+            raise _NotApplicable("uniform / absent p_reach (nothing to visualise)")
+        plot_p_reach_agent_reach(
+            edges_csv_path=edge_files[0],
+            out_path=build_output_p_reach_path(args, csv_path),
+            fig_type=args.figure_file_type,
+        )
+        plot_p_reach_network(
+            edges_csv_path=edge_files[0],
+            opinion_change_csv=csv_path,
+            out_path=build_output_p_reach_network_path(args, csv_path),
+            fig_type=args.figure_file_type,
+            num_agents=args.num_agents,
+        )
+    except _NotApplicable as na:
+        print(f"[p_reach] not applicable for this run ({na})")
+    except Exception as e:
+        print(f"[p_reach] Skipping p_reach plot due to error: {e}")
+
+    try:
+        if not ctx["has_step_summary"]:
+            raise _NotApplicable("no step-summary data in this run")
         step_summary_csv = build_input_step_summary_csv_path(args)
         plot_step_movement_from_summary(
             step_summary_csv_path=step_summary_csv,
@@ -4855,10 +5039,14 @@ def main():
             )
         except Exception as e2:
             print(f"[exposure-ecology] Skipping exposure ecology outputs due to error: {e2}")
+    except _NotApplicable as na:
+        print(f"[step-summary] not applicable for this run ({na})")
     except Exception as e:
         print(f"[step-summary] Skipping step-summary plots due to error: {e}")
 
     try:
+        if not ctx["has_agent_summary"]:
+            raise _NotApplicable("no persona/agent-summary data in this run")
         step_summary_csv = build_input_step_summary_csv_path(args)
         agent_summary_csv = build_input_agent_summary_csv_path(args)
         plot_trajectory_by_profile(
@@ -4899,6 +5087,8 @@ def main():
             out_path=build_output_persona_trait_delta_plot_path(args, csv_path),
             fig_type=args.figure_file_type,
         )
+    except _NotApplicable as na:
+        print(f"[persona-plots] not applicable for this run ({na})")
     except Exception as e:
         print(f"[persona-plots] Skipping persona-aware plots due to error: {e}")
 

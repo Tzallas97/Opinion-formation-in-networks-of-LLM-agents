@@ -30,7 +30,7 @@
 
 ## 3. Τι παράγεται ανά run
 
-Κάθε γράφημα skip-άρεται με μήνυμα αν λείπει το CSV-πηγή του· το run δεν σπάει ποτέ.
+Κάθε οικογένεια γραφημάτων παράγεται **μόνο όταν ισχύει για το run** (gated by applicability, στο πνεύμα των ADR-006 opt-in μεταβλητών). Στην αρχή τυπώνεται ένα `[plot-plan] run=NETWORK/SOLO … interactions=… edges=… step_summary=… personas=…`, και ένα group που δεν ισχύει (π.χ. network/interaction/persona plots σε `--solo_check` run — LLM μόνο του, χωρίς δίκτυο) **δεν επιχειρείται καν**: καθαρό «not applicable» skip, όχι error. Επιπλέον, αν λείπει το CSV-πηγή ενός γραφήματος, skip-άρεται με μήνυμα· το run δεν σπάει ποτέ.
 
 **Κατανομές γνώμης**
 - Initial / final histograms, paired initial-vs-final.
@@ -55,6 +55,11 @@ despined άξονες, απαλό grid, καθαρή sans-serif, ήρεμη πα
 **Δίκτυο**
 - Degree distribution, assortativity over time, BA hub assignment, ego-network timelines,
   neighbourhood alignment, edge belief differential, animated network GIF, interactive 3D HTML.
+- **p_reach (ADR-006 Component 3)** — παράγονται ΜΟΝΟ όταν το run έχει directed-edge CSVs ΚΑΙ το
+  reach ποικίλλει (μη-uniform policy· uniform=1.0 → skip by design): (α) *agent reach bar* (μέσο
+  outgoing p_reach ανά agent, throttled = κόκκινο) και (β) *p_reach follow graph* (κατευθυνόμενο
+  δίκτυο, edge opacity/width ∝ reach, belief-colored nodes, gold ring = throttled agents). Κάνουν
+  ορατή τη shadowban/homophilic policy στον πληθυσμό (feeds P21/P30).
 
 **Μηχανισμοί**
 - Empirical Markov transition matrix (counts + probabilities), influence matrix,
