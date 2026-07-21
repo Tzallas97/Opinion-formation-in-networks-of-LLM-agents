@@ -49,6 +49,13 @@
 Όλα τα γραφήματα μοιράζονται πλέον ένα ενιαίο μοντέρνο στυλ (`_apply_modern_style`): λευκό φόντο,
 despined άξονες, απαλό grid, καθαρή sans-serif, ήρεμη παλέτα.
 
+**Δομή φακέλου εξόδου (decluttered):** τα **PNG/GIF/HTML plots** μένουν στο top-level του
+`results/…/plots/<version>/<run>/`, ενώ τα **derived CSV/data** (BDP timeseries, markov, run-report,
+persona-delta, exposure ecology, influence matrix, …) πάνε σε ένα `csv/` subfolder μέσα εκεί — ώστε
+ο φάκελος να μη «φουσκώνει» με μικτά αρχεία. Writers + readers χρησιμοποιούν τους ίδιους
+`build_output_*` builders (extension-based `_out_path`), οπότε μένουν συνεπείς· παλιά runs
+regenerάρονται στο `csv/` στο επόμενο plot pass.
+
 **Τροχιές**
 - All-agent overlay, per-agent small multiples, B/D/P time series, step movement, cumulative drift.
 

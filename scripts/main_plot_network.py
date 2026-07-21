@@ -418,6 +418,18 @@ def build_input_interactions_csv_path(args) -> str:
     print(f"[markov] Using interactions CSV: {path}")
     return path
 
+def _out_path(out_dir: str, filename: str) -> str:
+    """Route a plot-output file: derived CSV/data files go into a csv/ subfolder of
+    the plot dir (declutter -- the top level stays plots-only), while images
+    (png/pdf/svg/gif/html) and frame directories stay at the top level. Reads and
+    writes both go through the build_output_* helpers, so they stay consistent."""
+    if str(filename).lower().endswith(".csv"):
+        sub = os.path.join(out_dir, "csv")
+        os.makedirs(sub, exist_ok=True)
+        return os.path.join(sub, filename)
+    return os.path.join(out_dir, filename)
+
+
 def _build_plot_subdir(csv_path: str, args) -> str:
     """Create and return the plot output directory associated with an input run CSV."""
     model_name = sanitize_model_name_for_path(args.model_name)
@@ -471,7 +483,7 @@ def build_output_timeseries_path(args, csv_path: str) -> str:
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     out_file = f"{run_stem}_timeseries.{args.figure_file_type}"
-    return os.path.join(out_dir, out_file)
+    return _out_path(out_dir, out_file)
 
 
 def build_output_histogram_path(args, csv_path: str) -> str:
@@ -479,7 +491,7 @@ def build_output_histogram_path(args, csv_path: str) -> str:
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     out_file = f"{run_stem}_final_distribution.{args.figure_file_type}"
-    return os.path.join(out_dir, out_file)
+    return _out_path(out_dir, out_file)
 
 
 def build_output_initial_histogram_path(args, csv_path: str) -> str:
@@ -487,7 +499,7 @@ def build_output_initial_histogram_path(args, csv_path: str) -> str:
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     out_file = f"{run_stem}_initial_distribution.{args.figure_file_type}"
-    return os.path.join(out_dir, out_file)
+    return _out_path(out_dir, out_file)
 
 def build_output_step50_distribution_path(args, csv_path: str) -> str:
     """
@@ -496,7 +508,7 @@ def build_output_step50_distribution_path(args, csv_path: str) -> str:
     """
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_step50_distribution.png")
+    return _out_path(out_dir, f"{run_stem}_step50_distribution.png")
 
 
 def build_output_bdp_timeseries_path(args, csv_path: str) -> str:
@@ -506,14 +518,14 @@ def build_output_bdp_timeseries_path(args, csv_path: str) -> str:
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     out_file = f"{run_stem}_BDP_timeseries.csv"
-    return os.path.join(out_dir, out_file)
+    return _out_path(out_dir, out_file)
 
 def build_output_bdp_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
     out_file = f"{run_stem}_BDP_timeseries.{args.figure_file_type}"
-    return os.path.join(out_dir, out_file)
+    return _out_path(out_dir, out_file)
 
 def build_output_distribution_frames_dir(args, csv_path: str) -> str:
     """
@@ -521,7 +533,7 @@ def build_output_distribution_frames_dir(args, csv_path: str) -> str:
     """
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    frames_dir = os.path.join(out_dir, f"{run_stem}_distribution_frames")
+    frames_dir = _out_path(out_dir, f"{run_stem}_distribution_frames")
     os.makedirs(frames_dir, exist_ok=True)
     return frames_dir
 
@@ -532,27 +544,27 @@ def build_output_distribution_gif_path(args, csv_path: str) -> str:
     """
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_opinion_distribution_evolution.gif")
+    return _out_path(out_dir, f"{run_stem}_opinion_distribution_evolution.gif")
 
 def build_output_markov_counts_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_markov_transition_counts.csv")
+    return _out_path(out_dir, f"{run_stem}_markov_transition_counts.csv")
 
 
 def build_output_markov_probs_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_markov_transition_probs.csv")
+    return _out_path(out_dir, f"{run_stem}_markov_transition_probs.csv")
 
 
 def build_output_markov_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_markov_transition_matrix.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_markov_transition_matrix.{args.figure_file_type}")
 
 def build_output_markov_counts_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
@@ -568,202 +580,202 @@ def build_output_step_movement_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_step_movement_intensity.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_step_movement_intensity.{args.figure_file_type}")
 
 
 def build_output_cumulative_drift_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_cumulative_drift.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_cumulative_drift.{args.figure_file_type}")
 
 
 def build_output_profile_trajectory_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_trajectory_by_profile.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_trajectory_by_profile.{args.figure_file_type}")
 
 
 def build_output_final_distribution_by_profile_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_final_distribution_by_profile.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_final_distribution_by_profile.{args.figure_file_type}")
 
 
 def build_output_movement_by_profile_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_movement_by_profile.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_movement_by_profile.{args.figure_file_type}")
 
 
 def build_output_agent_small_multiples_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_agent_small_multiples.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_agent_small_multiples.{args.figure_file_type}")
 
 
 def build_output_markov_window_counts_path(args, csv_path: str, label: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_markov_transition_counts_{label}.csv")
+    return _out_path(out_dir, f"{run_stem}_markov_transition_counts_{label}.csv")
 
 
 def build_output_markov_window_probs_path(args, csv_path: str, label: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_markov_transition_probs_{label}.csv")
+    return _out_path(out_dir, f"{run_stem}_markov_transition_probs_{label}.csv")
 
 
 def build_output_markov_window_plot_path(args, csv_path: str, label: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_markov_transition_matrix_{label}.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_markov_transition_matrix_{label}.{args.figure_file_type}")
 
 
 def build_output_markov_window_counts_plot_path(args, csv_path: str, label: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_markov_transition_counts_{label}.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_markov_transition_counts_{label}.{args.figure_file_type}")
 
 
 def build_output_cue_metrics_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_step2_cue_concentration.csv")
+    return _out_path(out_dir, f"{run_stem}_step2_cue_concentration.csv")
 
 
 def build_output_cue_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_step2_cue_concentration.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_step2_cue_concentration.{args.figure_file_type}")
 
 
 def build_output_repair_timeseries_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_repair_events_over_time.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_repair_events_over_time.{args.figure_file_type}")
 
 
 def build_output_repair_tags_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_repair_tag_counts.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_repair_tag_counts.{args.figure_file_type}")
 
 
 def build_output_repair_tags_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_repair_tag_counts.csv")
+    return _out_path(out_dir, f"{run_stem}_repair_tag_counts.csv")
 
 def build_output_source_provenance_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_source_provenance.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_source_provenance.{args.figure_file_type}")
 
 
 def build_output_source_provenance_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_source_provenance.csv")
+    return _out_path(out_dir, f"{run_stem}_source_provenance.csv")
 
 
 def build_output_individual_trajectories_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_individual_belief_trajectories.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_individual_belief_trajectories.{args.figure_file_type}")
 
 
 def build_output_persona_trait_delta_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_persona_trait_delta.csv")
+    return _out_path(out_dir, f"{run_stem}_persona_trait_delta.csv")
 
 
 def build_output_persona_trait_delta_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_persona_trait_delta.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_persona_trait_delta.{args.figure_file_type}")
 
 
 def build_output_rag_direction_breakdown_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_rag_direction_breakdown.csv")
+    return _out_path(out_dir, f"{run_stem}_rag_direction_breakdown.csv")
 
 
 def build_output_rag_direction_breakdown_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_rag_direction_breakdown.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_rag_direction_breakdown.{args.figure_file_type}")
 
 
 def build_output_ego_network_timeline_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_ego_network_belief_timelines.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_ego_network_belief_timelines.{args.figure_file_type}")
 
 
 def build_output_edge_belief_diff_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_edge_belief_differential_heatmap.csv")
+    return _out_path(out_dir, f"{run_stem}_edge_belief_differential_heatmap.csv")
 
 
 def build_output_edge_belief_diff_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_edge_belief_differential_heatmap.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_edge_belief_differential_heatmap.{args.figure_file_type}")
 
 
 def build_output_run_summary_card_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_summary_card.csv")
+    return _out_path(out_dir, f"{run_stem}_summary_card.csv")
 
 
 def build_output_run_summary_card_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_summary_card.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_summary_card.{args.figure_file_type}")
 
 
 def build_output_agent_neighborhood_alignment_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_agent_neighborhood_alignment.csv")
+    return _out_path(out_dir, f"{run_stem}_agent_neighborhood_alignment.csv")
 
 
 def build_output_agent_neighborhood_alignment_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_agent_neighborhood_alignment.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_agent_neighborhood_alignment.{args.figure_file_type}")
 
 
 
@@ -771,28 +783,28 @@ def build_output_paired_distribution_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_initial_final_distribution_pair.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_initial_final_distribution_pair.{args.figure_file_type}")
 
 
 def build_output_exposure_ecology_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_exposure_ecology.csv")
+    return _out_path(out_dir, f"{run_stem}_exposure_ecology.csv")
 
 
 def build_output_exposure_ecology_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_exposure_ecology.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_exposure_ecology.{args.figure_file_type}")
 
 
 def build_output_final_belief_strip_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_final_belief_strip_by_trait.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_final_belief_strip_by_trait.{args.figure_file_type}")
 
 def plot_opinion_trajectories(
     csv_path: str,
@@ -2047,70 +2059,70 @@ def build_output_run_report_summary_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_run_report_summary.csv")
+    return _out_path(out_dir, f"{run_stem}_run_report_summary.csv")
 
 
 def build_output_run_report_dashboard_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_run_report_dashboard.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_run_report_dashboard.{args.figure_file_type}")
 
 
 def build_output_influence_matrix_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_influence_matrix.csv")
+    return _out_path(out_dir, f"{run_stem}_influence_matrix.csv")
 
 
 def build_output_influence_matrix_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_influence_matrix.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_influence_matrix.{args.figure_file_type}")
 
 
 def build_output_theme_effectiveness_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_theme_effectiveness.csv")
+    return _out_path(out_dir, f"{run_stem}_theme_effectiveness.csv")
 
 
 def build_output_theme_effectiveness_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_theme_effectiveness.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_theme_effectiveness.{args.figure_file_type}")
 
 
 def build_output_network_assortativity_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_network_assortativity.csv")
+    return _out_path(out_dir, f"{run_stem}_network_assortativity.csv")
 
 
 def build_output_network_assortativity_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_network_assortativity.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_network_assortativity.{args.figure_file_type}")
 
 
 def build_output_ba_hub_assignment_csv_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_ba_hub_assignment_metrics.csv")
+    return _out_path(out_dir, f"{run_stem}_ba_hub_assignment_metrics.csv")
 
 
 def build_output_ba_hub_assignment_plot_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_ba_hub_assignment_metrics.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_ba_hub_assignment_metrics.{args.figure_file_type}")
 
 
 def _first_existing_path(paths):
@@ -3899,70 +3911,70 @@ def build_output_network_degree_distribution_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_network_degree_distribution.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_network_degree_distribution.{args.figure_file_type}")
 
 
 def build_output_degree_vs_total_delta_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_network_degree_vs_total_delta.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_network_degree_vs_total_delta.{args.figure_file_type}")
 
 
 def build_output_degree_vs_influence_score_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_network_degree_vs_influence_score.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_network_degree_vs_influence_score.{args.figure_file_type}")
 
 
 def build_output_bridge_vs_total_delta_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_bridge_score_vs_total_delta.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_bridge_score_vs_total_delta.{args.figure_file_type}")
 
 
 def build_output_bridge_vs_influence_score_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_bridge_score_vs_influence_score.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_bridge_score_vs_influence_score.{args.figure_file_type}")
 
 
 def build_output_exposure_adjusted_persuasion_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_exposure_adjusted_persuasion.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_exposure_adjusted_persuasion.{args.figure_file_type}")
 
 
 def build_output_ba_hub_target_status_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_ba_hub_target_status.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_ba_hub_target_status.{args.figure_file_type}")
 
 
 def build_output_stabilisation_timeline_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_stabilisation_timeline.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_stabilisation_timeline.{args.figure_file_type}")
 
 
 def build_output_move_count_over_time_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_move_count_over_time.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_move_count_over_time.{args.figure_file_type}")
 
 
 def build_output_centrality_weighted_B_path(args, csv_path: str) -> str:
     """Build the output path for one generated plot or diagnostic artifact."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_centrality_weighted_B_over_time.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_centrality_weighted_B_over_time.{args.figure_file_type}")
 
 
 def _coerce_num(df: pd.DataFrame, col: str, default=0.0) -> pd.Series:
@@ -4365,14 +4377,14 @@ def build_output_opinion_heatmap_path(args, csv_path: str) -> str:
     """Build the output path for the opinion-distribution-over-time heatmap."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_opinion_heatmap.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_opinion_heatmap.{args.figure_file_type}")
 
 
 def build_output_fragmentation_path(args, csv_path: str) -> str:
     """Build the output path for the opinion-fragmentation-over-time plot."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_fragmentation.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_fragmentation.{args.figure_file_type}")
 
 
 def _opinion_matrix_from_csv(csv_path: str, num_agents: int):
@@ -4466,14 +4478,14 @@ def build_output_streamgraph_path(args, csv_path: str) -> str:
     """Build the output path for the opinion-share streamgraph."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_opinion_streamgraph.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_opinion_streamgraph.{args.figure_file_type}")
 
 
 def build_output_ridgeline_path(args, csv_path: str) -> str:
     """Build the output path for the opinion-distribution ridgeline."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_opinion_ridgeline.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_opinion_ridgeline.{args.figure_file_type}")
 
 
 def plot_opinion_streamgraph(csv_path: str, out_path: str, fig_type: str, num_agents: int) -> None:
@@ -4571,7 +4583,7 @@ def build_output_p_reach_path(args, csv_path: str) -> str:
     """Output path for the ADR-006 Component 3 p_reach (algorithmic reach) plot."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_p_reach_agent_reach.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_p_reach_agent_reach.{args.figure_file_type}")
 
 
 def plot_p_reach_agent_reach(edges_csv_path: str, out_path: str, fig_type: str = "png") -> None:
@@ -4607,7 +4619,7 @@ def build_output_p_reach_network_path(args, csv_path: str) -> str:
     """Output path for the p_reach directed-network diagram (ADR-006 Component 3)."""
     out_dir = _build_plot_subdir(csv_path, args)
     run_stem = _get_run_stem(csv_path)
-    return os.path.join(out_dir, f"{run_stem}_p_reach_network.{args.figure_file_type}")
+    return _out_path(out_dir, f"{run_stem}_p_reach_network.{args.figure_file_type}")
 
 
 def _belief_bucket_color(v) -> str:
