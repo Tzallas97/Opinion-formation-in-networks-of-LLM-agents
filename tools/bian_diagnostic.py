@@ -186,16 +186,21 @@ _PERSONA_SEEDS = [
     "a software developer", "a religious community leader", "a professional athlete",
 ]
 
-_ROLE_PROMPT = ("Invent one fictional person for a short story. Reply with ONLY "
-                "their occupation, in one to three words -- no name, no sentence.")
+_ROLE_PROMPT = ("Think of one ordinary working adult chosen at random from the "
+                "real-world population. Reply with ONLY their real occupation, in "
+                "one to three words. No name, no sentence, no fictional or fantasy "
+                "jobs.")
 
 
 # --------------------------------------------------------------------------- #
 # LLM caller (real path). Tests inject a fake chat_fn and never reach this.    #
 # --------------------------------------------------------------------------- #
 
-def _ollama_generate(prompt, model, url=None, timeout=120):
-    body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
+def _ollama_generate(prompt, model, url=None, timeout=120, think=None):
+    payload = {"model": model, "prompt": prompt, "stream": False}
+    if think is not None:
+        payload["think"] = bool(think)  # reasoning models (qwen3) honour this
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request((url or OLLAMA_URL) + "/api/generate",
                                  data=body, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -326,7 +331,7 @@ def probe_positivity(chat_fn, n=100, model=None):
 # Orchestration                                                              #
 # --------------------------------------------------------------------------- #
 
-def run_all_probes(model, chat_fn=None, out_path=None, n_samples=100, url=None):
+def run_all_probes(model, chat_fn=None, out_path=None, n_samples=100, url=None, think=None):
     """Run the five probes and (optionally) write bian_scores.json.
 
     ``chat_fn(prompt, model=None) -> str`` is injected by tests; when omitted the
@@ -335,7 +340,7 @@ def run_all_probes(model, chat_fn=None, out_path=None, n_samples=100, url=None):
     """
     if chat_fn is None:
         def chat_fn(prompt, model=model):
-            return _ollama_generate(prompt, model, url=url)
+            return _ollama_generate(prompt, model, url=url, think=think)
 
     n = max(1, int(n_samples))
     n_dlg = max(2, min(n, 20))
@@ -351,6 +356,7 @@ def run_all_probes(model, chat_fn=None, out_path=None, n_samples=100, url=None):
     }
     data = {
         "model": model,
+        "think": think,
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "n_samples": n,
         "scores": scores,
@@ -374,9 +380,14 @@ def main(argv=None):
                     help="samples per probe (default 100; ADR spec)")
     ap.add_argument("--url", default=None,
                     help="Ollama base URL (default $OLLAMA_URL or localhost:11434)")
+    ap.add_argument("--think", choices=["default", "on", "off"], default="default",
+                    help="reasoning mode for models that support it (qwen3): default "
+                         "= model default, on/off = force. Running BOTH on and off is "
+                         "itself a diagnostic -- does chain-of-thought change the bias?")
     ap.add_argument("--force", action="store_true",
                     help="recompute even if --out already exists (cache override)")
     args = ap.parse_args(argv)
+    think = {"default": None, "on": True, "off": False}[args.think]
 
     out = args.out or ("bian_scores_"
                        + re.sub(r"[^A-Za-z0-9_.-]", "_", args.model) + ".json")
@@ -385,7 +396,7 @@ def main(argv=None):
         data = json.load(open(out, encoding="utf-8"))
     else:
         data = run_all_probes(args.model, out_path=out,
-                              n_samples=args.n_samples, url=args.url)
+                              n_samples=args.n_samples, url=args.url, think=think)
     print(json.dumps(data["scores"], indent=2))
     print(f"[bian] wrote {out}")
     return 0
