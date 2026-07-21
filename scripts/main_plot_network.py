@@ -5159,6 +5159,8 @@ def main():
     # and depend on per-step edge files being present, so a failure here must
     # not discard the static plots already written above.
     try:
+        if not ctx["is_network"]:
+            raise _NotApplicable("no network graph in this run")
         plot_dir = _build_plot_subdir(csv_path, args)
         out_prefix = args.output_file if args.output_file else f"seed{args.seed}"
         generate_network_frames_and_gif(
@@ -5179,6 +5181,8 @@ def main():
             step_stride=1,     # set to 5 if you want it lighter
             layout_seed=42,
         )
+    except _NotApplicable as na:
+        print(f"[network-animation] not applicable for this run ({na})")
     except Exception as e:
         print(f"[network-animation] Skipping network GIF / 3D HTML due to error: {e}")
 
