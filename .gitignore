@@ -12,6 +12,7 @@
 !.gitignore
 !.gitattributes
 !README.md
+!LICENSE
 !requirements.txt
 !list_agent_descriptions.csv
 !assets/
