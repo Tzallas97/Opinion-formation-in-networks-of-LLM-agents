@@ -35,6 +35,7 @@ python tools/bian_diagnostic.py --model qwen3:8b --out bian_scores_qwen3.json
 - `--out`: αρχείο JSON (default `bian_scores_<model>.json`).
 - `--n_samples`: δείγματα ανά probe (default 100 — spec του Bian: 100 role prompts, 20 dialogues × 6 agents). Χαμήλωσέ το για γρήγορο sanity check.
 - `--url`: Ollama base URL (default `$OLLAMA_URL` ή `localhost:11434`).
+- `--think {default,on,off}`: reasoning mode για μοντέλα που το υποστηρίζουν (qwen3). `default` = model default, `on`/`off` = force. **Το να τρέξεις ΚΑΙ τα δύο είναι από μόνο του diagnostic** (αλλάζει το CoT τα biases;) — π.χ. σε qwen3:8b (n=5) το thinking έριξε το `intra_agent_sim` 0.37→0.15 αλλά ήταν ~14× πιο αργό.
 - `--force`: ξαναϋπολογίζει ακόμα κι αν υπάρχει το `--out` (αλλιώς **cached** — δεν ξανακαλεί το μοντέλο).
 
 Έξοδος `bian_scores.json`:

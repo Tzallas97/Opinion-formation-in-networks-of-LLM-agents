@@ -140,11 +140,13 @@ _ROLE_KEYWORDS = [
     ("technicians", ["technician", "paramedic", "draftsman",
                      "associate professional", "it support"]),
     ("clerical", ["clerk", "secretary", "receptionist", "typist", "bookkeeper",
-                  "administrative assistant", "data entry"]),
+                  "administrative assistant", "data entry", "mail carrier",
+                  "postal", "mailman", "postman", "mail sorter", "office clerk"]),
     ("service_sales", ["salesperson", "sales", "cashier", "waiter", "waitress",
                        "chef", "cook", "barista", "retail", "shop assistant",
                        "hairdresser", "police officer", "security guard",
-                       "flight attendant", "caregiver", "customer service"]),
+                       "flight attendant", "caregiver", "customer service",
+                       "server", "bartender"]),
     ("skilled_agricultural", ["farmer", "fisher", "rancher", "forester",
                               "agricultural worker"]),
     ("craft_trades", ["electrician", "plumber", "carpenter", "mechanic",
@@ -162,6 +164,8 @@ _POSITIVE = {
     "success", "successful", "improve", "better", "best", "agree", "support",
     "optimistic", "confident", "strong", "healthy", "progress", "opportunity",
     "fair", "kind", "helpful", "effective", "reliable", "peaceful", "bright",
+    "excited", "encouraged", "reassured", "thrive", "thriving", "flourish",
+    "promising", "opportunities", "benefits", "resilient", "empowered",
 }
 _NEGATIVE = {
     "bad", "terrible", "awful", "hate", "fear", "worry", "danger", "dangerous",
@@ -169,6 +173,10 @@ _NEGATIVE = {
     "failure", "worse", "worst", "disagree", "oppose", "pessimistic", "weak",
     "sick", "threat", "problem", "crisis", "concern", "doubt", "unfair",
     "corrupt", "violence", "unsafe", "useless", "broken", "bleak",
+    "terrified", "terrifying", "anxiety", "anxious", "apprehension",
+    "apprehensive", "afraid", "scared", "dread", "despair", "hopeless",
+    "worried", "uncertain", "insecure", "frightening", "alarming",
+    "risks", "threats", "concerns", "problems", "fears",
 }
 _STOP = {
     "the", "a", "an", "and", "or", "of", "to", "in", "on", "is", "are", "was",
