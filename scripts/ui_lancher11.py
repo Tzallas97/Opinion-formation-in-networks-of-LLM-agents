@@ -532,6 +532,7 @@ DEFAULT_SETTINGS = {
     "p_reach_shadowban_fraction": "0.1",
     "p_reach_shadowban_value": "0.1",
     "p_reach_enforcement": "filter",
+    "p_reach_shadowban_target": "random",
     # ADR-006 Component 4: Bian diagnostic opt-in.
     "include_bian_scores": "off",
 
@@ -1929,12 +1930,18 @@ class LauncherUI(tk.Tk):
         ttk.Combobox(cfg_global, textvariable=self.p_reach_enforcement_var, values=["filter", "suppress"], width=10, state="readonly").grid(row=13, column=1, sticky="w", padx=6)
         ttk.Label(cfg_global, text="Μόνο όταν p_reach < 1.0 (homophilic/shadowban). ΠΩΣ επιβάλλεται η μειωμένη εμβέλεια. filter (default) = ο throttled speaker αφαιρείται από τους υποψήφιους speakers (Bernoulli στο ΚΟΙΝΟ rng) -> σπάνια επιλέγεται· μοντελοποιεί «reduced surfacing», ΑΛΛΑ τα draws του κάνουν τις single-seed uniform-vs-treatment συγκρίσεις να αποκλίνουν (RNG-path confound). suppress = ο speaker επιλέγεται κανονικά (ίδια interaction sequence με matched baseline)· αν είναι throttled, Bernoulli σε ΑΦΙΕΡΩΜΕΝΟ rng αποφασίζει αν φτάνει το tweet, και σε αποτυχία ΔΕΝ εφαρμόζεται το belief-update· μοντελοποιεί «de-ranked/ignored delivery» και δίνει ΚΑΘΑΡΗ single-seed αιτιακή σύγκριση. roads_not_taken 3.11 fix γ.",
                   style="Muted.TLabel", wraplength=620, justify="left").grid(row=13, column=2, columnspan=3, sticky="w")
-        # ADR-006 Component 4: Bian 5-dim diagnostic opt-in (feeds P28).
-        ttk.Label(cfg_global, text="Include Bian bias scores:").grid(row=14, column=0, sticky="w", pady=6)
-        self.include_bian_scores_var = tk.StringVar(value=self._settings.get("include_bian_scores", "off"))
-        ttk.Combobox(cfg_global, textvariable=self.include_bian_scores_var, values=["off", "on"], width=8, state="readonly").grid(row=14, column=1, sticky="w", padx=6)
-        ttk.Label(cfg_global, text="Πριν το run, τρέχει το tools/bian_diagnostic.py για το επιλεγμένο Ollama μοντέλο και ενσωματώνει τα 5 scores (social role KL, inter/intra agent similarity, keyword persistence, positivity) στο config self-doc του run. Cached ανά μοντέλο. off (default) = no-op. Bian 2025 (arXiv:2510.21180) validity protocol, feeds P28.",
+        # ADR-006 Component 3, roads 3.11: which agents get shadow-banned.
+        ttk.Label(cfg_global, text="p_reach shadowban target:").grid(row=14, column=0, sticky="w", pady=6)
+        self.p_reach_shadowban_target_var = tk.StringVar(value=self._settings.get("p_reach_shadowban_target", "random"))
+        ttk.Combobox(cfg_global, textvariable=self.p_reach_shadowban_target_var, values=["random", "extreme"], width=10, state="readonly").grid(row=14, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_global, text="Μόνο για policy=shadowban. ΠΟΙΟΙ agents τιμωρούνται. random (default) = τυχαίο υποσύνολο μεγέθους shadowban fraction. extreme = οι πιο ακραίοι agents (μεγαλύτερο |αρχική γνώμη|, deterministic, ties by index) — «targeted shadow-ban» που σιωπά τις πιο έντονες φωνές· με enforcement=suppress δίνει καθαρή extreme-vs-neutral single-seed σύγκριση (P21).",
                   style="Muted.TLabel", wraplength=620, justify="left").grid(row=14, column=2, columnspan=3, sticky="w")
+        # ADR-006 Component 4: Bian 5-dim diagnostic opt-in (feeds P28).
+        ttk.Label(cfg_global, text="Include Bian bias scores:").grid(row=15, column=0, sticky="w", pady=6)
+        self.include_bian_scores_var = tk.StringVar(value=self._settings.get("include_bian_scores", "off"))
+        ttk.Combobox(cfg_global, textvariable=self.include_bian_scores_var, values=["off", "on"], width=8, state="readonly").grid(row=15, column=1, sticky="w", padx=6)
+        ttk.Label(cfg_global, text="Πριν το run, τρέχει το tools/bian_diagnostic.py για το επιλεγμένο Ollama μοντέλο και ενσωματώνει τα 5 scores (social role KL, inter/intra agent similarity, keyword persistence, positivity) στο config self-doc του run. Cached ανά μοντέλο. off (default) = no-op. Bian 2025 (arXiv:2510.21180) validity protocol, feeds P28.",
+                  style="Muted.TLabel", wraplength=620, justify="left").grid(row=15, column=2, columnspan=3, sticky="w")
         ttk.Label(cfg_global, text="Wrong-side explanation re-query:").grid(row=4, column=0, sticky="w", pady=6)
         self.wrong_side_requery_var = tk.StringVar(value=self._settings.get("wrong_side_explanation_requery", "off"))
         ttk.Combobox(cfg_global, textvariable=self.wrong_side_requery_var, values=["off", "on"], width=8, state="readonly").grid(row=4, column=1, sticky="w", padx=6)
@@ -4112,6 +4119,7 @@ class LauncherUI(tk.Tk):
             "p_reach_shadowban_fraction": getattr(self, "p_reach_shadowban_fraction_var", tk.StringVar(value="0.1")).get().strip(),
             "p_reach_shadowban_value": getattr(self, "p_reach_shadowban_value_var", tk.StringVar(value="0.1")).get().strip(),
             "p_reach_enforcement": (getattr(self, "p_reach_enforcement_var", tk.StringVar(value="filter")).get() or "filter").strip(),
+            "p_reach_shadowban_target": (getattr(self, "p_reach_shadowban_target_var", tk.StringVar(value="random")).get() or "random").strip(),
             "include_bian_scores": (getattr(self, "include_bian_scores_var", tk.StringVar(value="off")).get() or "off"),
 
             # Global LLM defaults
@@ -6005,6 +6013,9 @@ class LauncherUI(tk.Tk):
         p_reach_enforcement = (getattr(self, "p_reach_enforcement_var", tk.StringVar(value="filter")).get() or "filter").strip()
         if p_reach_enforcement != "" and _supports("--p_reach_enforcement"):
             cmd += ["--p_reach_enforcement", p_reach_enforcement]
+        p_reach_shadowban_target = (getattr(self, "p_reach_shadowban_target_var", tk.StringVar(value="random")).get() or "random").strip()
+        if p_reach_shadowban_target != "" and _supports("--p_reach_shadowban_target"):
+            cmd += ["--p_reach_shadowban_target", p_reach_shadowban_target]
         # ADR-006 Component 4: pass --include_bian_scores through if the sim exposes it.
         include_bian_scores = (getattr(self, "include_bian_scores_var", tk.StringVar(value="off")).get() or "off").strip()
         if _supports("--include_bian_scores"):
