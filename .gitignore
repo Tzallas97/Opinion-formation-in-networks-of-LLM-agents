@@ -11,6 +11,9 @@
 # 2) allow these top-level entries
 !.gitignore
 !.gitattributes
+!.github/
+.github/*
+!.github/workflows/
 !README.md
 !LICENSE
 !requirements.txt
@@ -87,3 +90,6 @@ scripts/*
 **/__pycache__/
 *.pyc
 **/node_modules/
+
+# research result pages + figures (local convenience copies; flip to version them)
+artifacts/

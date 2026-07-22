@@ -12,6 +12,9 @@ langchain-ollama
 langchain-classic
 tenacity
 
+# HTTP client — native Ollama REST calls and ngrok-tunnelled hosts
+requests
+
 # Data / numerics
 numpy
 pandas

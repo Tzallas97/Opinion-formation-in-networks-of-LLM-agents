@@ -1,11 +1,19 @@
 # Opinion dynamics on networks of LLM agents
 
+[![tests](https://github.com/Tzallas97/Opinion-formation-in-networks-of-LLM-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/Tzallas97/Opinion-formation-in-networks-of-LLM-agents/actions/workflows/ci.yml)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Agent-based simulation of how opinions form and spread through a network of
 agents, where every agent is a local large language model (Qwen, served by
 Ollama). Agents hold a position on a topic from −2 (fully reject) to +2 (fully accept),
 talk to their neighbours over a network, and update what they believe.
 
 ![Two populations of LLM agents forming opinions over a network](assets/network_opinion_dynamics.png)
+
+> **At a glance** — a fully **offline-reproducible** Python research system (~2 MB, **82 passing tests**, no GPU required): 30 local LLM agents (Qwen via Ollama) deliberate across a social network while I isolate three forces — network structure, retrieval-based evidence (RAG), and trust — and measure how opinions form, polarise, and spread. Ships a Tkinter launcher, a cross-family **LLM-as-judge** evaluation layer, semantic-similarity metrics, and interactive HTML viewers.
+>
+> **Tech:** Python 3.12 · LLM orchestration (Ollama / Qwen, LangChain) · Retrieval-Augmented Generation · multi-agent systems · NetworkX · pandas / NumPy · matplotlib / Plotly · pytest · GitHub Actions CI.
 
 The core thesis pipeline is the simulation, the launcher, and the plotting script. The repo also
 ships a larger offline analysis and evaluation toolkit (`tools/`) that goes beyond the thesis; it
@@ -32,6 +40,24 @@ across network structures, evidence environments, and trust levels and compared.
 This is the code for a diploma thesis at the University of Ioannina, Department
 of Computer Science and Engineering (Opinion Formation in Networks of Large
 Language Model Agents, 2026).
+
+## Quickstart (offline — no GPU, Ollama, or model download)
+
+A full experiment talks to a local LLM, but the entire pipeline also runs in a
+deterministic **offline mode** (`FAKE_LLM=1`) that swaps the model for a stub.
+So you can clone the repo and reproduce the full test suite in a couple of
+minutes, with nothing installed but the Python packages:
+
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt pytest
+FAKE_LLM=1 PYTHONHASHSEED=0 python -m pytest tests/ -q   # 82 tests, ~2-3 min
+```
+
+The same `FAKE_LLM=1` toggle powers an end-to-end offline regression test of the
+simulation itself (`tests/test_adr006_baseline_regression.py`), so the pipeline
+is exercised without any model. For real runs with live inference, see
+[Setup](#setup).
 
 ## Repository layout
 

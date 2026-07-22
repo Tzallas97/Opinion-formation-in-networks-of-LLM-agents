@@ -1,0 +1,36 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system Tk (launcher headless tests)
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      # The whole pipeline runs offline: FAKE_LLM=1 swaps the model for a
+      # deterministic stub, so no Ollama / GPU / model download is needed.
+      - name: Run test suite (offline)
+        env:
+          FAKE_LLM: "1"
+          PYTHONHASHSEED: "0"
+        run: python -m pytest tests/ -q
