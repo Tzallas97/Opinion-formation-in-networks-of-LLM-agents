@@ -1933,7 +1933,7 @@ class LauncherUI(tk.Tk):
         # ADR-006 Component 3, roads 3.11: which agents get shadow-banned.
         ttk.Label(cfg_global, text="p_reach shadowban target:").grid(row=14, column=0, sticky="w", pady=6)
         self.p_reach_shadowban_target_var = tk.StringVar(value=self._settings.get("p_reach_shadowban_target", "random"))
-        ttk.Combobox(cfg_global, textvariable=self.p_reach_shadowban_target_var, values=["random", "extreme"], width=10, state="readonly").grid(row=14, column=1, sticky="w", padx=6)
+        ttk.Combobox(cfg_global, textvariable=self.p_reach_shadowban_target_var, values=["random", "extreme", "balanced_extreme"], width=16, state="readonly").grid(row=14, column=1, sticky="w", padx=6)
         ttk.Label(cfg_global, text="Μόνο για policy=shadowban. ΠΟΙΟΙ agents τιμωρούνται. random (default) = τυχαίο υποσύνολο μεγέθους shadowban fraction. extreme = οι πιο ακραίοι agents (μεγαλύτερο |αρχική γνώμη|, deterministic, ties by index) — «targeted shadow-ban» που σιωπά τις πιο έντονες φωνές· με enforcement=suppress δίνει καθαρή extreme-vs-neutral single-seed σύγκριση (P21).",
                   style="Muted.TLabel", wraplength=620, justify="left").grid(row=14, column=2, columnspan=3, sticky="w")
         # ADR-006 Component 4: Bian 5-dim diagnostic opt-in (feeds P28).

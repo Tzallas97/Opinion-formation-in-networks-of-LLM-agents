@@ -3745,14 +3745,16 @@ parser.add_argument(
 parser.add_argument(
     "--p_reach_shadowban_target",
     default="random",
-    choices=["random", "extreme"],
+    choices=["random", "extreme", "balanced_extreme"],
     type=str,
     help="ADR-006 Component 3, shadowban policy. WHICH agents get throttled. "
          "random (default) = a random subset of size shadowban_fraction. extreme "
          "= the most opinionated agents (highest |initial belief|, deterministic, "
          "ties by index) - the 'targeted shadow-ban' that silences the loudest "
-         "voices; pair with enforcement=suppress for a clean extreme-vs-neutral "
-         "contrast (P21).",
+         "voices. balanced_extreme = alternates the most negative and most positive "
+         "agents so the throttled set is sign-symmetric (e.g. one +2 and one -2), "
+         "separating 'loudness' from 'direction'. Pair with enforcement=suppress for "
+         "a clean targeted-vs-neutral contrast (P21).",
 )
 parser.add_argument(
     "--p_reach_enforcement",
@@ -16416,6 +16418,24 @@ def main(
                         _ranked = sorted(range(num_agents),
                                          key=lambda _i: (-abs(int(opinions_by_idx[_i])), _i))
                         _p_reach_params["shadowban_agents"] = set(_ranked[:min(_n_banned, num_agents)])
+                    elif _sb_target == "balanced_extreme":
+                        # Sign-symmetric targeted shadow-ban: alternate the most negative
+                        # and most positive agents (negative first), so the throttled set
+                        # is balanced in sign - separates "loudness" from "direction".
+                        # Deterministic (ties by index), no rng consumed.
+                        _neg = sorted(range(num_agents), key=lambda _i: (int(opinions_by_idx[_i]), _i))
+                        _pos = sorted(range(num_agents), key=lambda _i: (-int(opinions_by_idx[_i]), _i))
+                        _sel, _ni, _pi = [], 0, 0
+                        while len(_sel) < min(_n_banned, num_agents):
+                            if len(_sel) % 2 == 0:
+                                while _neg[_ni] in _sel:
+                                    _ni += 1
+                                _sel.append(_neg[_ni]); _ni += 1
+                            else:
+                                while _pos[_pi] in _sel:
+                                    _pi += 1
+                                _sel.append(_pos[_pi]); _pi += 1
+                        _p_reach_params["shadowban_agents"] = set(_sel)
                     else:
                         # In suppress mode the shadowban draw must also avoid the main rng
                         # (otherwise the treatment's stream diverges from uniform).
