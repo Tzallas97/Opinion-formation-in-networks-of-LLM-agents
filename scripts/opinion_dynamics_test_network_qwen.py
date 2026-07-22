@@ -158,6 +158,7 @@ def _dump_run_metrics_json():
                 "p_reach_shadowban_fraction": getattr(args, "p_reach_shadowban_fraction", None),
                 "p_reach_shadowban_value": getattr(args, "p_reach_shadowban_value", None),
                 "p_reach_enforcement": str(getattr(args, "p_reach_enforcement", "filter")),
+                "p_reach_shadowban_target": str(getattr(args, "p_reach_shadowban_target", "random")),
             }
         except Exception:
             _cfg = {}
@@ -3740,6 +3741,18 @@ parser.add_argument(
     type=float,
     help="ADR-006 Component 3, shadowban policy. Reach probability for the "
          "penalised agents' outgoing edges. Default 0.1.",
+)
+parser.add_argument(
+    "--p_reach_shadowban_target",
+    default="random",
+    choices=["random", "extreme"],
+    type=str,
+    help="ADR-006 Component 3, shadowban policy. WHICH agents get throttled. "
+         "random (default) = a random subset of size shadowban_fraction. extreme "
+         "= the most opinionated agents (highest |initial belief|, deterministic, "
+         "ties by index) - the 'targeted shadow-ban' that silences the loudest "
+         "voices; pair with enforcement=suppress for a clean extreme-vs-neutral "
+         "contrast (P21).",
 )
 parser.add_argument(
     "--p_reach_enforcement",
@@ -16392,12 +16405,24 @@ def main(
                 if _p_reach_policy == "shadowban":
                     _sb_fraction = float(getattr(args, "p_reach_shadowban_fraction", 0.1))
                     _n_banned = max(1, int(round(_sb_fraction * num_agents)))
-                    # In suppress mode the shadowban draw must also avoid the main rng
-                    # (otherwise the treatment's stream diverges from uniform).
-                    _sb_rng = _p_reach_rng if _p_reach_enforcement == "suppress" else rng
-                    _p_reach_params["shadowban_agents"] = set(
-                        _sb_rng.sample(range(num_agents), min(_n_banned, num_agents))
-                    )
+                    # Which agents get throttled: a random subset (default,
+                    # byte-identical) or the most opinionated agents (targeted).
+                    _sb_target = str(getattr(args, "p_reach_shadowban_target", "random")).strip().lower()
+                    if _sb_target == "extreme":
+                        # Targeted shadow-ban: silence the loudest voices (|belief|
+                        # descending, ties broken by index). Deterministic, so no rng
+                        # is consumed - the main stream stays aligned with the matched
+                        # baseline for a clean single-seed contrast (extreme vs neutral).
+                        _ranked = sorted(range(num_agents),
+                                         key=lambda _i: (-abs(int(opinions_by_idx[_i])), _i))
+                        _p_reach_params["shadowban_agents"] = set(_ranked[:min(_n_banned, num_agents)])
+                    else:
+                        # In suppress mode the shadowban draw must also avoid the main rng
+                        # (otherwise the treatment's stream diverges from uniform).
+                        _sb_rng = _p_reach_rng if _p_reach_enforcement == "suppress" else rng
+                        _p_reach_params["shadowban_agents"] = set(
+                            _sb_rng.sample(range(num_agents), min(_n_banned, num_agents))
+                        )
                 for _src in list(dir_net.following.keys()):
                     for _dst in dir_net.following[_src]:
                         dir_net.p_reach[(_src, _dst)] = assign_p_reach(
