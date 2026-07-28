@@ -404,3 +404,7 @@ personas, no network, no interactions — so each "agent" is an independent samp
 own prior. Set **Solo check: on** in the launcher, or pass `--solo_check on` to
 `opinion_dynamics_test_network_qwen.py`. It uses the same native inference path and decoding
 options as a full run, so the solo numbers are directly comparable to in-network behaviour.
+
+## License
+
+© 2026 Spyros Tzallas. This work — code, data, figures, and research material — is licensed under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/): free to **share and adapt for non-commercial purposes** with attribution. **Commercial use of any part requires prior written permission** (tzallasspyros97@gmail.com). See [LICENSE](LICENSE).
