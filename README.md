@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/Tzallas97/Opinion-formation-in-networks-of-LLM-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/Tzallas97/Opinion-formation-in-networks-of-LLM-agents/actions/workflows/ci.yml)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
 Agent-based simulation of how opinions form and spread through a network of
 agents, where every agent is a local large language model (Qwen, served by
